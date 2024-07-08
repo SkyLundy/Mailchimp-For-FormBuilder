@@ -5,7 +5,10 @@ $info = [
     'version' => 001,
     'summary' => 'Add subscribers to MailChimp Audiences',
     'icon' => 'envelope-square',
-    'requires' => 'FormBuilder>=0.4.5',
+    'requires' => [
+        'FormBuilder>=0.5.5',
+        'PHP>=8.1',
+    ],
 ];
 
 

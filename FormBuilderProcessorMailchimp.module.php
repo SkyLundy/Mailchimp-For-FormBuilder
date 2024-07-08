@@ -2,17 +2,42 @@
 
 namespace ProcessWire;
 
-wire('classLoader')->addNamespace('FormBuilderProcessorMailchimp\App', __DIR__ . 'app');
+wire('classLoader')->addNamespace('FormBuilderProcessorMailchimp\App', __DIR__ . '/app');
 
 use FormBuilderProcessorMailchimp\App\MailChimp;
 
 class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implements Module, ConfigurableModule
 {
     /**
+     * Mailchimp API client
+     */
+    private ?Mailchimp $mailchimpClient = null;
+
+    /**
+     * Mailchimp API memoized data
+     */
+
+    private array $mailchimpAudiences = [];
+
+    private array $mailchimpMergeFields = [
+        'audienceId' => null,
+        'mergeFields' => [],
+    ];
+
+    private array $mailchimpSegments = [
+        'audienceId' => null,
+        'segments' => [],
+    ];
+
+    /**
      * Process submitted form
      */
     public function processReady()
     {
+        if (!$this->mailchimp_audience_id) {
+            return;
+        }
+
         $postData = $this->input->post->getArray();
 
         if (!$this->isSubmittableToMailchimp($postData)) {
@@ -83,7 +108,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
                          $fieldName !== '_InputfieldForm' &&
                          $fieldName !== 'MAX_FILE_SIZE';
 
-        if ($invalidField) {
+        if ($invalidField || $fieldName === $this->form_opt_in_checkbox) {
             return false;
         }
 
@@ -104,17 +129,21 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
     ): mixed {
         !$audienceId && $audienceId = $this->form_audience_id ?: $this->global_audience_id;
 
-        return $this->___initMailchimp($apiKey)->post("lists/{$audienceId}/members", $subscriberData);
+        return $this->mailchimpClient()->post("lists/{$audienceId}/members", $subscriberData);
     }
 
     /**
      * Create the Mailchimp API client
      */
-    public function ___initMailchimp(?string $apiKey = null): MailChimp
+    public function mailchimpClient(?string $apiKey = null): MailChimp
     {
+        if ($this->mailchimpClient) {
+            return $this->mailchimpClient;
+        }
+
         !$apiKey && $apiKey = $this->form_api_key ?: $this->global_api_key;
 
-        return new MailChimp($apiKey);
+        return $this->mailchimpClient = new MailChimp($apiKey);
     }
 
     /**
@@ -164,13 +193,71 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         parent::getConfigInputfields($inputfields);
         $modules = $this->wire()->modules;
 
+$result = $this->getMailchimpSegments($this->mailchimp_audience_id);
+
+// $result = $this->mailchimpClient()->get('lists/d221b5a07a/interest-categories');
+// $result = $this->mailchimpClient()->get('lists/d221b5a07a/merge-fields');
+// $result = $this->mailchimpClient()->get('lists/d221b5a07a/signup-forms');
+// var_dump(json_encode($this->mailchimpClient()->get('lists')));
+//
+var_dump(json_encode($result));
+die;
+        $audienceSelect = $modules->get('InputfieldSelect');
+        $audienceSelect->attr('name', 'mailchimp_audience_id');
+        $audienceSelect->label = __('Mailchimp Audience');
+        $audienceSelect->description = __('Choose the Audience (list) submissions will be sent to');
+        $audienceSelect->val($this->mailchimp_audience_id);
+        $audienceSelect->collapsed = Inputfield::collapsedNever;
+        $audienceSelect->themeBorder = 'hide';
+        $audienceSelect->themeInputWidth = 'l';
+
+        $mailchimpAudiences = $this->mailchimpClient()->get('lists')['lists'] ?: [];
+
+        $audienceSelect = array_reduce(
+            $mailchimpAudiences,
+            fn ($inputfield, $audience) => $inputfield->addOption($audience['id'], $audience['name']),
+            $audienceSelect
+        );
+
+        // No audiences present in Mailchimp
+        if (!count($mailchimpAudiences)) {
+            $audienceSelect->required = false;
+
+            $audienceSelect->notes = __(
+                'At least one Audience must be created in Mailchimp to receive submissions'
+            );
+        }
+
+        // No audience selected
+        if (!$this->mailchimp_audience_id) {
+            $audienceSelect->notes = __('Select a Mailchimp audience, save, then return here to configure');
+
+            $inputfields->add($audienceSelect);
+
+            return $inputfields;
+        }
+
+        $inputfields->add($audienceSelect);
+
+        // Check if audience has changed
+        $previouslySelectedAudience = $this->page->meta()->get('previously_selected_audience');
+
+        $audienceChanged = $previouslySelectedAudience !== $this->mailchimp_audience_id;
+
+        if ($audienceChanged) {
+          $this->page->meta()->set('previously_selected_audience', $this->mailchimp_audience_id);
+        }
+
         // Opt-In checkbox field
         $optInCheckboxSelect = $modules->get('InputfieldSelect');
         $optInCheckboxSelect->attr('name', 'form_opt_in_checkbox');
         $optInCheckboxSelect->label = __('Opt-in checkbox field');
-        $optInCheckboxSelect->description = __('If no opt-in checkbox is specified, all submissions be sent to Mailchimp');
+        $optInCheckboxSelect->description = __('If no opt-in checkbox is specified, all submissions will be sent to Mailchimp');
         $optInCheckboxSelect->val($this->form_opt_in_checkbox);
         $optInCheckboxSelect->collapsed = Inputfield::collapsedNever;
+        $optInCheckboxSelect->themeBorder = 'hide';
+        $optInCheckboxSelect->showIf = "mailchimp_audience_id!=''";
+        $optInCheckboxSelect->themeInputWidth = 'l';
 
         $checkboxFields = array_filter(
             $this->fbForm->children,
@@ -185,32 +272,39 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
             $optInCheckboxSelect->notes = __('Add one or more checkboxes to define an opt-in checkbox');
         }
 
-        foreach ($checkboxFields as $checkboxField) {
-            $optInCheckboxSelect->addOption($checkboxField->name, $checkboxField->label);
-        }
+        $optInCheckboxSelect = array_reduce(
+            $checkboxFields,
+            fn ($inputfield, $checkbox) => $inputfield->addOption($checkbox->name, $checkbox->label),
+            $optInCheckboxSelect
+        );
 
         $inputfields->add($optInCheckboxSelect);
 
         // Field associations fieldset
         $fieldAssociationFieldset = $modules->get('InputfieldFieldset');
         $fieldAssociationFieldset->attr('name', 'field_associations');
-        $fieldAssociationFieldset->label = __('Form/Mailchimp field associations');
-        $fieldAssociationFieldset->description = __('A field associated with email_address is required. Leave the field blank if the form field matches the Mailchimp field name.');
+        $fieldAssociationFieldset->label = __('Mailchimp/form field associations');
+        $fieldAssociationFieldset->description = __(
+            'Choose a form field to associate with each Leave association blank to exclude it from Mailchimp submissions'
+        );
         $fieldAssociationFieldset->collapsed = Inputfield::collapsedNever;
         $fieldAssociationFieldset->notes = __('File upload fields are excluded from Mailchimp processing');
 
-        foreach ($this->fbForm->children as $field) {
-            $fieldAssociationConfig = $this->createFormFieldConfiguration($field);
+        $mailchimpMergeFields = $this->getMailchimpMergeFields($this->mailchimp_audience_id)['merge_fields'];
 
-            if (!$fieldAssociationConfig) {
+        // Create configurations for each Mailchimp field
+        foreach ($mailchimpMergeFields as $mergeField) {
+            $mergeFieldConfiguration = $this->createMergeFieldConfiguration($mergeField);
+
+            if (!$mergeFieldConfiguration) {
                 continue;
             }
 
-            $fieldAssociationFieldset->add($fieldAssociationConfig);
+            $fieldAssociationFieldset->add($mergeFieldConfiguration);
         }
 
         // Add filler InputfieldFieldsets if needed to create evenly spaced columns
-        $remainingCols = count($this->fbForm->children) % 4;
+        $remainingCols = count($mailchimpMergeFields) % 4;
 
         while ($remainingCols >= 0) {
             $filler = $this->modules->InputfieldFieldset;
@@ -227,107 +321,106 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
 
         $inputfields->add($fieldAssociationFieldset);
 
-        // Specify a Mailchimp API key for this form
-        $field = $modules->get('InputfieldText');
-        $field->attr('name', 'form_api_key');
-        $field->label = __('API Key');
-        $field->required = !$this->global_api_key || (!$this->global_api_key && !$this->form_api_key);
-        $field->val($this->form_api_key);
-        $field->columnWidth = 50;
-        $field->collapsed = Inputfield::collapsedBlank;
-
-        if ($this->global_api_key) {
-            $apiKeyEndChars = substr($this->global_api_key, -12);
-
-            $field->placeholder = "XXXXXXXXXXXXXXXXXXXXXXXXX{$apiKeyEndChars}";
-
-            $field->description = __(
-                "Leave blank to use the globally configured API key, or specify one for this form"
-            );
-        }
-
-        $inputfields->add($field);
-
-        // Specify a Mailchimp Audience ID for this form
-        $field = $modules->get('InputfieldText');
-        $field->attr('name', 'form_audience_id');
-        $field->label = __('Audience ID');
-        $field->required = !$this->global_api_key || (!$this->global_api_key && !$this->form_api_key);
-        $field->val($this->form_audience_id);
-        $field->columnWidth = 50;
-        $field->collapsed = Inputfield::collapsedBlank;
-
-        if ($this->global_audience_id) {
-            $field->placeholder = $this->global_audience_id;
-            $field->description = __(
-                "Leave blank to use the globally configured Audience ID, or specify one for this form"
-            );
-        }
-
-        $inputfields->add($field);
-
         return $inputfields;
     }
 
     /**
      * Create a form/Mailchimp field association config for the given form field
      */
-    private function createFormFieldConfiguration(FormBuilderField $field): ?InputfieldFieldset
+    private function createMergeFieldConfiguration(array $mergeField): ?InputfieldSelect
     {
-        if (!$this->isValidMailchimpField($field)) {
+        [
+            'tag' => $mcTag,
+            'name' => $mcName,
+            'type' => $mcType,
+            'required' => $mcRequired,
+            'options' => $mcOptions,
+        ] = $mergeField;
+
+        if (!$this->mailchimp_audience_id || $mcType === 'address') {
             return null;
         }
 
+
         $modules = $this->wire()->modules;
-        $fieldName = $field->name;
-        $fieldLabel = $field->label;
 
-        $fieldset = $modules->get('InputfieldFieldset');
-        $fieldset->attr('name', "field_configs_{$fieldName}");
-        $fieldset->label = $fieldLabel;
-        $fieldset->themeBorder = 'hide';
-        $fieldset->collapsed = Inputfield::collapsedNever;
-        $fieldset->columnWidth = 25;
+        $configFieldName = "{$this->mailchimp_audience_id}_{$mcTag}";
 
-        [
-            'includeFieldCheckbox' => $includeFieldCheckbox,
-            'mailchimpFieldNameText' => $mailchimpFieldNameText,
-        ] = $this->getMailchimpConfigFieldNames($fieldName);
+        // Field association select
+        $mergeFieldConfig = $modules->get('InputfieldSelect');
+        $mergeFieldConfig->attr('name', $configFieldName);
+        $mergeFieldConfig->label = $mcName;
+        $mergeFieldConfig->val($this->$configFieldName);
+        $mergeFieldConfig->collapsed = Inputfield::collapsedNever;
+        $mergeFieldConfig->themeBorder = 'hide';
+        $mergeFieldConfig->columnWidth = 25;
+        $mergeFieldConfig->required = $mcRequired;
 
-        // Include this field in Mailchimp subscription submissions
-        $field = $modules->get('InputfieldCheckbox');
-        $field->attr('name', $includeFieldCheckbox);
-        $field->label = 'Submit?';
-        $field->checked = $this->$includeFieldCheckbox;
-        $field->themeBorder = 'hide';
-        $field->collapsed = Inputfield::collapsedNever;
+        // Include any special notes depending on field
 
-        $fieldset->add($field);
+        $notes = [];
 
-        // Name of Mailchimp field to associate with FormBuilder field
-        $field = $modules->get('InputfieldText');
-        $field->attr('name', $mailchimpFieldNameText);
-        $field->label = 'Mailchimp field';
-        $field->attr('value', $this->$mailchimpFieldNameText);
-        $field->showIf = "FormBuilderProcessorMailchimp_{$includeFieldCheckbox}=1";
-        $field->placeholder = $fieldName;
-        $field->themeBorder = 'hide';
-        $field->collapsed = Inputfield::collapsedNever;
+        foreach ($mcOptions as $name => $value) {
+            $name = preg_replace('/[-_]/', ' ', $name);
+            $name = ucfirst($name);
 
-        $fieldset->add($field);
+            is_array($value) && $value = implode(', ', $value);
 
-        return $fieldset;
+            $notes[] = "{$name}: $value";
+        }
+
+        $mergeFieldConfig->notes = implode('. ', $notes);
+
+        $formFields = $this->fbForm->children;
+
+        foreach ($formFields as $formField) {
+            $mergeFieldConfig->addOption($formField->name, $formField->label);
+        }
+
+        return $mergeFieldConfig;
+
+
+
+
+
+
+
+        // [
+        //     'includeFieldCheckbox' => $includeFieldCheckbox,
+        //     'mailchimpFieldNameText' => $mailchimpFieldNameText,
+        // ] = $this->getMailchimpConfigFieldNames($fieldName);
+
+        // // Include this field in Mailchimp subscription submissions
+        // $field = $modules->get('InputfieldCheckbox');
+        // $field->attr('name', $includeFieldCheckbox);
+        // $field->label = 'Submit?';
+        // $field->checked = $this->$includeFieldCheckbox;
+        // $field->themeBorder = 'hide';
+        // $field->collapsed = Inputfield::collapsedNever;
+
+        // $fieldset->add($field);
+
+        // // Name of Mailchimp field to associate with FormBuilder field
+        // $field = $modules->get('InputfieldText');
+        // $field->attr('name', $mailchimpFieldNameText);
+        // $field->label = 'Mailchimp field';
+        // $field->attr('value', $this->$mailchimpFieldNameText);
+        // $field->showIf = "FormBuilderProcessorMailchimp_{$includeFieldCheckbox}=1";
+        // $field->placeholder = $fieldName;
+        // $field->themeBorder = 'hide';
+        // $field->collapsed = Inputfield::collapsedNever;
+
+        // $fieldset->add($field);
+
+        // return $fieldset;
     }
 
     /**
      * Creates thefield names for a given Mailchimp config
      */
-    private function getMailchimpConfigFieldNames(string $fieldName): array
+    private function getMailchimpFieldConfigName(string $fieldName): string
     {
-        return [
-            'includeFieldCheckbox' => "{$fieldName}_mailchimp_submit_field",
-            'mailchimpFieldNameText' => "{$fieldName}_mailchimp_field_name",
-        ];
+        return "{$this->mailchimp_audience_id}_field_{$fieldName}";
     }
 
     /**
@@ -360,20 +453,72 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
                 'notes' => __(' If this field is left blank, an API key will be required when configuring each form'),
                 'value' => $this->global_api_key ?? null,
                 'columnWidth' => 50,
-            ],
-            'global_audience_id' => [
-                'type' => 'InputfieldText',
-                'collapsed' => Inputfield::collapsedNever,
-                'label' => __('Audience ID'),
-                'description' => __('A Mailchimp Audience ID may be entered here to be used for all forms. This ID can be overridden when configuring each form'),
-                'notes' => __(' If this field is left blank, an Audience ID will be required when configuring each form'),
-                'value' => $this->global_audience_id ?? null,
-                'columnWidth' => 50,
-            ],
+            ]
         ]);
 
         $inputfields->add($fieldset);
 
         return $inputfields;
+    }
+
+    /**
+     * Memoizing API Data methods
+     */
+
+    /**
+     * Get all Mailchimp audiences (lists)
+     * Returns the API response body
+     */
+    private function getMailchimpAudiences(): array
+    {
+        if (count($this->mailchimpAudiences)) {
+            return $this->mailchimpAudiences;
+        }
+
+        return $this->mailchimpAudiences = $this->mailchimpClient()->get('lists');
+    }
+
+    /**
+     * Gets the merge fields for a given audience ID
+     * Memoizes results by audience ID
+     * Returns the API response body
+     */
+    private function getMailchimpMergeFields(string $audienceId): array
+    {
+        [
+            'audienceId' => $fetchedAudienceId,
+            'mergeFields' => $fetchedMergeFields,
+        ] = $this->mailchimpMergeFields;
+
+        if (count($fetchedMergeFields) && $audienceId === $fetchedAudienceId) {
+            return $fetchedMergeFields;
+        }
+
+        $mergeFields = $this->mailchimpClient()->get("lists/{$audienceId}/merge-fields");
+
+        $this->mailchimpMergeFields = ['audienceId' => $audienceId, 'mergeFields' => $mergeFields];
+
+        return $mergeFields;
+    }
+
+    /**
+     * Gets segments for a given audience ID
+     */
+    private function getMailchimpSegments(string $audienceId): array
+    {
+        [
+            'audienceId' => $fetchedAudienceId,
+            'segments' => $fetchedSegments,
+        ] = $this->mailchimpSegments;
+
+        if (count($fetchedSegments) && $audienceId === $fetchedAudienceId) {
+            return $fetchedSegments;
+        }
+
+        $segments = $this->mailchimpClient()->get("/lists/{$audienceId}/segments");
+
+        $this->mailchimpSegments = ['audienceId' => $audienceId, 'segments' => $segments];
+
+        return $segments;
     }
 }
