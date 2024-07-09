@@ -171,18 +171,6 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
     }
 
     /**
-     * Gets the field name to be used when submitting to Mailchimp
-     */
-    private function getMailchimpFieldName($fieldName): string
-    {
-        [
-            'mailchimpFieldNameText' => $mailchimpFieldNameText,
-        ] = $this->getMailchimpConfigFieldNames($fieldName);
-
-        return $this->$mailchimpFieldNameText ?: $fieldName;
-    }
-
-    /**
      * Form processor configuration
      */
     public function getConfigInputfields(InputfieldWrapper $inputfields): InputfieldWrapper
@@ -198,6 +186,36 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
 
             return $inputfields->add($notReady);
         }
+
+        $usageNotes = $modules->get('InputfieldMarkup');
+        $usageNotes->label = 'How to configure this form for use with Mailchimp';
+        $usageNotes->collapsed = Inputfield::collapsedYes;
+        $usageNotes->themeOffset = 'm';
+        $usageNotes->value = <<<EOD
+        <p><strong>Mailchimp Audience</strong></p>
+        <p>The Audience (aka List) is the destination for the entries sent from this form.</p>
+
+        <p><strong>Audience Tags</strong></p>
+        <p>Audience tags are configured in Mailchimp and can assist with segmenting incoming entries. Choose one or more tags to further organize information received by Mailchimp.</p>
+
+        <p><strong>Opt-in Checkbox Field</strong></p>
+        <p>Specify a checkbox to let users opt-in to email communications, optional.</p>
+
+        <p><strong>Mailchimp Fields</strong></p>
+        <p>Choose a form field to associate with a Mailchimp field. Selections may be left blank if submission to Mailchimp is not desired. Fields that are required in Mailchimp are reflected in the fields below. Notes may be present below fields which may provide additional information that can assist you when configuring the fields for this form. These can include formatting, expected/allowed values, and maximum length (size) of the value for that field.</p>
+
+        <p>Addresses are configured as groups of fields. Some fields may be required by Mailchimp to successfully submit an address. If an address is required in Mailchimp, then the fields for that address will be set as required in the field configurations below. Note that fields can be required to have information as part of a complete address as expected by Mailchimp while the fields themselves in this configuration are not marked as required.</p>
+
+        <p>Aside from required fields, it is only necessary to create Mailchimp/form field associations for fields that should be submitted to Mailchimp. By default, Mailchimp only requires that an email address is submitted.</p>
+
+        <p><strong>Mailchimp Groups/Interests</strong></p>
+        <p>Some fields are set as "groups" in Mailchimp. Like tags, these values help add additional organization to Mailchimp contacts. Group fields may be dropdowns, checkboxes, radio buttons, etc. These appear as fields in Mailchimp but behave and collect information with more specificity. When matching form fields to groups, ensure that options/values in your form fields match those noted as configured in Mailchimp. Consider creating/using fields in your form that match the type of field in Mailchimp. The type is noted below each field where it is configured.</p>
+
+        <p><strong>Test Your Form Configuration</strong></p>
+        <p>Always test your Mailchimp integrations. Ensure that the fields are submitting the data in the proper formatting expected by Mailchimp and that required fields are configured properly.</p>
+        EOD;
+
+        $inputfields->add($usageNotes);
 
         /**
          * Mailchimp Audience (list)
@@ -376,7 +394,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         $interestCategoryAssociationFieldset = $modules->get('InputfieldFieldset');
         $interestCategoryAssociationFieldset->label = __('Mailchimp groups/interests');
         $interestCategoryAssociationFieldset->description = __(
-            "Fields may be configured as groups which are referred to as 'group names' in Mailchimp. Group fields may be dropdowns, checkboxes, radio buttons, etc. When matching form fields to groups, ensure that values in your form fields match those noted as configured in Mailchimp. Leave blank to exclude."
+            "Fields may be configured as groups which are referred to as 'group names' in Mailchimp. Leave blank to exclude."
         );
         $interestCategoryAssociationFieldset->collapsed = Inputfield::collapsedNever;
 
@@ -450,6 +468,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         $addr1Config = $this->createFormFieldSelect($fieldNames->addr1, __('Street Address'), [
             'columnWidth' => $columnWidth,
             'notes' => __('Required by Mailchimp'),
+            'required' => $mcRequired,
         ]);
 
         $fieldset->add($addr1Config);
@@ -465,6 +484,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         $cityConfig = $this->createFormFieldSelect($fieldNames->city, __('City'), [
             'columnWidth' => $columnWidth,
             'notes' => __('Required by Mailchimp'),
+            'required' => $mcRequired,
         ]);
 
         $fieldset->add($cityConfig);
@@ -473,6 +493,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         $stateConfig = $this->createFormFieldSelect($fieldNames->state, __('State/Prov/Region'), [
             'columnWidth' => $columnWidth,
             'notes' => __('Required by Mailchimp'),
+            'required' => $mcRequired,
         ]);
 
         $fieldset->add($stateConfig);
@@ -481,6 +502,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         $zipConfig = $this->createFormFieldSelect($fieldNames->zip, __('Postal/Zip'), [
             'columnWidth' => $columnWidth,
             'notes' => __('Required by Mailchimp'),
+            'required' => $mcRequired,
         ]);
 
         $fieldset->add($zipConfig);
@@ -488,6 +510,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         // Country
         $countryConfig = $this->createFormFieldSelect($fieldNames->country, __('Country'), [
             'columnWidth' => $columnWidth,
+            'required' => $mcRequired,
         ]);
 
         $fieldset->add($countryConfig);
