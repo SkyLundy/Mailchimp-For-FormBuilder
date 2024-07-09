@@ -190,6 +190,15 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         parent::getConfigInputfields($inputfields);
         $modules = $this->wire()->modules;
 
+        if (!$this->mailchimp_api_ready) {
+            $notReady = $modules->get('InputfieldMarkup');
+            $notReady->value = <<<EOD
+            <p>Add a valid Mailchimp API key on the FormBuilderProcessorMailchimp module configuration page to get started</p>
+            EOD;
+
+            return $inputfields->add($notReady);
+        }
+
         /**
          * Mailchimp Audience (list)
          */
@@ -612,39 +621,19 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
     }
 
     /**
-     * Module config fields
-     */
-    public function getModuleConfigInputfields(InputfieldWrapper $inputfields): InputfieldWrapper
-    {
-        $modules = $this->modules;
-
-        $apiKey = $modules->get('InputfieldText');
-        $apiKey->name = 'mailchimp_api_key';
-        $apiKey->label = __('Mailchimp API Key');
-        $apiKey->description = __('An API key entered here will be used globally for all FormBuilder forms but may be overridden when configuring each form.');
-        $apiKey->notes = __(' If this field is left blank, an API key will be required when configuring each form');
-        $apiKey->value = $this->mailchimp_api_key ?? null;
-        $apiKey->collapsed = Inputfield::collapsedNever;
-
-        $inputfields->add($apiKey);
-
-        return $inputfields;
-    }
-
-    /**
      * Mailchimp API
      */
 
     /**
      * Create the Mailchimp API client
      */
-    public function mailchimpClient(?string $apiKey = null): MailChimp
+    public function mailchimpClient(): MailChimp
     {
         if ($this->mailchimpClient) {
             return $this->mailchimpClient;
         }
 
-        return $this->mailchimpClient = new MailChimp($apiKey ?? $this->mailchimp_api_key);
+        return $this->mailchimpClient = new MailChimp($this->mailchimp_api_key);
     }
 
     /**
