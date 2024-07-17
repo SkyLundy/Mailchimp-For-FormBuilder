@@ -9,6 +9,11 @@ use FormBuilderProcessorMailchimp\App\MailChimp;
 class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implements Module, ConfigurableModule
 {
     /**
+     * Name of ProcessWire log
+     */
+    private const LOG_FILE = 'fb-mailchimp';
+
+    /**
      * Mailchimp API client
      */
     private ?Mailchimp $mailchimpClient = null;
@@ -51,7 +56,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
      */
     public function processReady()
     {
-        if (!$this->mailchimp_audience_id) {
+        if (!$this->mailchimp_audience_id || !$this->mailchimp_api_ready) {
             return;
         }
 
@@ -62,13 +67,24 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         }
 
         $mailchimpData = $this->getMailchimpRequestData($postData);
+dd($mailchimpData);
+        // dd($mailchimpData);
 
-        dd($mailchimpData);
-
-        dd('fired', $this->input->post->getArray(), $this->fbForm->children, $mailchimpData, 'end');
+        // dd('fired', $this->input->post->getArray(), $this->fbForm->children, $mailchimpData, 'end');
 
         $result = $this->___subscribe($mailchimpData);
 
+        dd($result);
+
+        $this->logResult($result);
+    }
+
+    /**
+     * Logs an error if encountered
+     */
+    private function logResult(array $result): void
+    {
+        $result = json_encode($result ?: ['No response data']);
         dd($result);
     }
 
@@ -110,10 +126,16 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
     {
         $audienceId = $this->mailchimp_audience_id;
 
+        $mergeFields = array_filter([
+            ...$this->getSubmissionMergeFieldData($postData),
+            ...$this->getSubmissionMergeFieldAddressData($postData),
+        ]);
+
         return array_filter([
             'email_address' => $postData[$this->{"{$audienceId}__email_address"}],
-            'merge_fields' => $this->getSubmissionMergeFieldData($postData),
+            'merge_fields' => $mergeFields,
             'tags' => $this->{"{$audienceId}__audience_tags"},
+            'status' => 'subscribed',
         ]);
     }
 
@@ -151,12 +173,55 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
     }
 
     /**
+     * Get merge fields for addresses
+     */
+    private function getSubmissionMergeFieldAddressData(array $postData): array
+    {
+        $audienceId = $this->mailchimp_audience_id;
+
+        $mergeTagConfigs = array_filter(
+            $this->data,
+            fn ($configName) => str_starts_with($configName, "{$audienceId}_address_merge_tag"),
+            ARRAY_FILTER_USE_KEY
+        );
+
+        $mergeTagConfigs = array_filter($mergeTagConfigs);
+
+        $tagConfigKeys = array_keys($mergeTagConfigs);
+
+        // Split config name into property name, merge tag name, and Mailchimp field name
+        return array_reduce(
+            $tagConfigKeys,
+            function($mcData, $tagConfig) use ($mergeTagConfigs, $postData) {
+                // Split config key XXXXXXXXXX_address_merge_tag-ADDRESS-addr1
+                [, $mergeTag, $mailchimpField] = explode('-', $tagConfig);
+
+                $mcData[$mergeTag] ??= [];
+
+                // Get ProcessWire field name using the full tag config key
+                $pwFieldName = $mergeTagConfigs[$tagConfig];
+
+                if (array_key_exists($pwFieldName, $postData)) {
+                    $mcData[$mergeTag][$mailchimpField] = $postData[$pwFieldName];
+                }
+
+                return $mcData;
+            },
+            []
+        );
+    }
+
+    /**
      * Gets the Mailchimp appropriate value for a given submitted form value
      */
     private function createMailchimpSubmissionValue(string $fieldName, array $data): mixed
     {
         $fields = $this->fbForm->children;
         $value = $data[$fieldName] ?? null;
+
+        if ($fields[$fieldName]->type === 'FormBuilderFile') {
+            bd($fields[$fieldName]->value);
+        }
 
         // Unrecognized field or no value
         if (is_null($fields[$fieldName]) || !$value) {
@@ -196,7 +261,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         <p>The Audience (aka List) is the destination for the entries sent from this form.</p>
 
         <p><strong>Audience Tags</strong></p>
-        <p>Audience tags are configured in Mailchimp and can assist with segmenting incoming entries. Choose one or more tags to further organize information received by Mailchimp.</p>
+        <p>Audience tags are configured in Mailchimp and can assist with segmenting incoming entries. Choose one or more tags to further organize information received by Mailchimp from FormBuilder forms.</p>
 
         <p><strong>Opt-in Checkbox Field</strong></p>
         <p>Specify a checkbox to let users opt-in to email communications, optional.</p>
@@ -207,6 +272,10 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         <p>Addresses are configured as groups of fields. Some fields may be required by Mailchimp to successfully submit an address. If an address is required in Mailchimp, then the fields for that address will be set as required in the field configurations below. Note that fields can be required to have information as part of a complete address as expected by Mailchimp while the fields themselves in this configuration are not marked as required.</p>
 
         <p>Aside from required fields, it is only necessary to create Mailchimp/form field associations for fields that should be submitted to Mailchimp. By default, Mailchimp only requires that an email address is submitted.</p>
+
+        <p>It is not possible to process image/file upload fields</p>
+
+        <p><strong>NOTE: If fields are changed in Mailchimp, they may need to be reconfigured here to submit correctly.</strong></p>
 
         <p><strong>Mailchimp Groups/Interests</strong></p>
         <p>Some fields are set as "groups" in Mailchimp. Like tags, these values help add additional organization to Mailchimp contacts. Group fields may be dropdowns, checkboxes, radio buttons, etc. These appear as fields in Mailchimp but behave and collect information with more specificity. When matching form fields to groups, ensure that options/values in your form fields match those noted as configured in Mailchimp. Consider creating/using fields in your form that match the type of field in Mailchimp. The type is noted below each field where it is configured.</p>
@@ -277,7 +346,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         $audienceTags = $this->getMailchimpTags($this->mailchimp_audience_id);
 
         foreach ($audienceTags as $audienceTag) {
-            $tagsSelect->addOption($audienceTag['id'], $audienceTag['name']);
+            $tagsSelect->addOption($audienceTag['name'], $audienceTag['name']);
         }
 
         $inputfields->add($tagsSelect);
@@ -326,7 +395,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         $fieldAssociationFieldset->label = __('Mailchimp fields');
         $fieldAssociationFieldset->collapsed = Inputfield::collapsedNever;
         $fieldAssociationFieldset->description = __(
-            'Choose a form field to associate with each Mailchimp field, leave blank to exclude. Mailchimp information is displayed below each field.'
+            'Choose a form field to associate with each Mailchimp field, leave blank to exclude if not required. Information provided by Mailchimp may be displayed below fields.'
         );
 
         $mailchimpMergeFields = array_filter(
@@ -343,27 +412,19 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
 
         // Create configurations for each Mailchimp field
         foreach ($mailchimpMergeFields as $mergeField) {
-            $mergeFieldConfiguration = $this->createMergeFieldConfiguration($mergeField);
-
-            if (!$mergeFieldConfiguration) {
-                continue;
-            }
-
-            $fieldAssociationFieldset->add($mergeFieldConfiguration);
+            $fieldAssociationFieldset->add(
+                $this->createMergeFieldConfiguration($mergeField)
+            );
 
             $fieldsAdded++;
         }
 
-        // Add filler InputfieldFieldsets if needed to create evenly spaced columns
-        $remainingCols = $fieldsAdded % 3;
-
-        while ($remainingCols >= 0) {
-            $fieldAssociationFieldset->add(
-                $this->createConfigColumnFiller(100 / 3)
-            );
-
-            $remainingCols--;
-        }
+        // Add spacing columns to fill remainder of row
+        $fieldAssociationFieldset = $this->addSpacingColumns(
+            $fieldAssociationFieldset,
+            $fieldsAdded % 3,
+            100 / 3
+        );
 
         /**
          * Mailchimp Address Associations (Added under field associations)
@@ -394,7 +455,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         $interestCategoryAssociationFieldset = $modules->get('InputfieldFieldset');
         $interestCategoryAssociationFieldset->label = __('Mailchimp groups/interests');
         $interestCategoryAssociationFieldset->description = __(
-            "Fields may be configured as groups which are referred to as 'group names' in Mailchimp. Leave blank to exclude."
+            "Fields may be configured as groups which are referred to as 'group names' in Mailchimp. Leave blank to exclude if not required."
         );
         $interestCategoryAssociationFieldset->collapsed = Inputfield::collapsedNever;
 
@@ -410,16 +471,11 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
             $fieldsAdded++;
         }
 
-        // Add filler InputfieldFieldsets if needed to create evenly spaced columns
-        $remainingCols = $fieldsAdded % 4;
-
-        while ($remainingCols >= 0) {
-            $interestCategoryAssociationFieldset->add(
-                $this->createConfigColumnFiller(25)
-            );
-
-            $remainingCols--;
-        }
+        $interestCategoryAssociationFieldset = $this->addSpacingColumns(
+            $interestCategoryAssociationFieldset,
+            $fieldsAdded % 4,
+            25
+        );
 
         $inputfields->add($interestCategoryAssociationFieldset);
 
@@ -444,7 +500,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         }
 
         $fieldset = $this->wire()->modules->InputfieldFieldset;
-        $fieldset->label = $mcName;
+        $fieldset->label = "{$mcName} - {$mcTag}";
         $fieldset->description = __('Address fields are limited to 45 characters.');
         $fieldset->collapsed = Inputfield::collapsedNever;
         $fieldset->themeBorder = 'hide';
@@ -526,8 +582,8 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         $fieldName = "{$this->mailchimp_audience_id}__email_address";
         $fieldLabel = __('Email Address');
 
-        return $this->createFormFieldSelect($fieldName, $fieldLabel, [
-            'columnWidth' => 25,
+        return $this->createFormFieldSelect($fieldName, "{$fieldLabel} - EMAIL", [
+            'columnWidth' => 100 / 3,
             'required' => true,
             'notes' => __('Required by Mailchimp'),
         ]);
@@ -547,8 +603,8 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
 
         $fieldName = "{$this->mailchimp_audience_id}_merge_tag__{$mcTag}";
 
-        return $this->createFormFieldSelect($fieldName, $mcName, [
-            'columnWidth' => 25,
+        return $this->createFormFieldSelect($fieldName, "{$mcName} - {$mcTag}", [
+            'columnWidth' => 100 / 3,
             'required' => $mcRequired,
             'notes' => $this->createInputfieldNotesFromMergeFieldOptions($mcOptions),
         ]);
@@ -602,19 +658,29 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
             $fieldSelect->$configName = $configValue;
         }
 
-        $options = array_reduce(
+        // Remove unsupported fields
+        $fields = array_filter(
             $this->fbForm->children,
+            fn ($field) => $field->type !== 'FormBuilderFile'
+        );
+
+        $options = array_reduce(
+            $fields,
             fn ($options, $field) => $options = [$field->name => $field->label, ...$options],
             []
         );
 
-        asort($options);
+        $options = array_reverse($options);
 
         $fieldSelect->addOptions($options);
 
         return $fieldSelect;
     }
 
+    /**
+     * Takes contents of 'options' property in a merge field API object and creates notes that are
+     * shown below a field association
+     */
     private function createInputfieldNotesFromMergeFieldOptions(array $options): ?string
     {
         array_walk($options, function(&$value, $name) {
@@ -630,17 +696,26 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
     }
 
     /**
-     * Creates a nice column filler for config field layouts
+     * Add spacing columns to fill remaining space left after fields in fieldset
      */
-    private function createConfigColumnFiller($width): InputfieldFieldset
-    {
-        $filler = $this->modules->InputfieldFieldset;
-        $filler->attr('style', $filler->attr('style') . ' visibility: hidden !important;');
-        $filler->wrapAttr('style', $filler->attr('style') . ' visibility: hidden !important;');
-        $filler->columnWidth = $width;
-        $filler->themeBorder = 'hide';
+    private function addSpacingColumns(
+        InputfieldFieldset $fieldset,
+        int $count,
+        int|float $width
+    ): InputfieldFieldset {
+        while ($count >= 0) {
+            $filler = $this->modules->InputfieldFieldset;
+            $filler->attr('style', $filler->attr('style') . ' visibility: hidden !important;');
+            $filler->wrapAttr('style', $filler->attr('style') . ' visibility: hidden !important;');
+            $filler->columnWidth = $width;
+            $filler->themeBorder = 'hide';
 
-        return $filler;
+            $fieldset->add($filler);
+
+            $count--;
+        }
+
+        return $fieldset;
     }
 
     /**
