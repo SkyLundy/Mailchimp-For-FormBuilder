@@ -1,10 +1,13 @@
 <?php
 
+declare(strict_types=1);
+
 namespace ProcessWire;
 
 wire('classLoader')->addNamespace('FormBuilderProcessorMailchimp\App', __DIR__ . '/app');
 
-use FormBuilderProcessorMailchimp\App\MailChimp;
+use DateTimeImmutable;
+use FormBuilderProcessorMailchimp\App\MailChimpClient;
 
 class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implements Module, ConfigurableModule
 {
@@ -19,36 +22,13 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
     private ?Mailchimp $mailchimpClient = null;
 
     /**
-     * Mailchimp API memoized data
+     * Indexes Mailchimp date formats to their PHP date format counterparts for formatting
      */
-
-    private array $mailchimpAudiences = [];
-
-    private array $mailchimpMergeFields = [
-        'audienceId' => null,
-        'mergeFields' => [],
-    ];
-
-    private array $mailchimpSegments = [
-        'audienceId' => null,
-        'segments' => [],
-    ];
-
-    /**
-     * interestCategories sub-array structure:
-     * [
-     *     'audienceId' => <string>,
-     *     'interestCategories' => [
-     *         [
-     *             'category' => <array> API response,
-     *             'interests' => <array> API response
-     *         ]
-     *     ],
-     * ]
-     */
-    private array $mailchimpInterestCategories = [
-        'audienceId' => null,
-        'interestCategories' => [],
+    private const DATE_FORMATS = [
+        'MM/DD' => 'm/d',
+        'DD/MM' => 'd/m',
+        'MM/DD/YYYY' => 'm/d/y',
+        'DD/MM/YYYY' => 'd/m/y',
     ];
 
     /**
@@ -68,15 +48,13 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
 
         $mailchimpData = $this->getMailchimpRequestData($postData);
 dd($mailchimpData);
-        // dd($mailchimpData);
-
         // dd('fired', $this->input->post->getArray(), $this->fbForm->children, $mailchimpData, 'end');
 
         $result = $this->___subscribe($mailchimpData);
 
-        dd($result);
+        bd($result);
 
-        $this->logResult($result);
+        // $this->logResult($result);
     }
 
     /**
@@ -95,7 +73,7 @@ dd($mailchimpData);
     {
         $audienceId ??= $this->mailchimp_audience_id;
 
-        return $this->mailchimpClient()->post("lists/{$audienceId}/members", $subscriberData);
+        return MailChimpClient::init($this->mailchimp_api_key)->subscribe($subscriberData, $audienceId);
     }
 
 
@@ -202,7 +180,7 @@ dd($mailchimpData);
                 $pwFieldName = $mergeTagConfigs[$tagConfig];
 
                 if (array_key_exists($pwFieldName, $postData)) {
-                    $mcData[$mergeTag][$mailchimpField] = $postData[$pwFieldName];
+                    $mcData[$mergeTag][$mailchimpField] = trim($postData[$pwFieldName]);
                 }
 
                 return $mcData;
@@ -219,8 +197,11 @@ dd($mailchimpData);
         $fields = $this->fbForm->children;
         $value = $data[$fieldName] ?? null;
 
-        if ($fields[$fieldName]->type === 'FormBuilderFile') {
-            bd($fields[$fieldName]->value);
+        if ($fields[$fieldName]->type === 'Datetime') {
+            // dateInputFormat
+            $date = new DateTimeImmutable($value);
+            dump($date->format());
+            dump($fields[$fieldName], $fields[$fieldName]->value);
         }
 
         // Unrecognized field or no value
@@ -228,11 +209,12 @@ dd($mailchimpData);
             return null;
         }
 
-        return match ($fields[$fieldName]->type) {
+        $value = match ($fields[$fieldName]->type) {
             'Page' => wire('pages')->get($value)?->title,
-            'FormBuilderFile' => $value->httpUrl,
             default => $value,
         };
+
+        return trim($value);
     }
 
     /**
@@ -251,6 +233,8 @@ dd($mailchimpData);
 
             return $inputfields->add($notReady);
         }
+
+        $MailChimpClient = MailChimpClient::init($this->mailchimp_api_key);
 
         $usageNotes = $modules->get('InputfieldMarkup');
         $usageNotes->label = 'How to configure this form for use with Mailchimp';
@@ -299,7 +283,7 @@ dd($mailchimpData);
         $audienceSelect->themeInputWidth = 'l';
         $audienceSelect->columnWidth = 100 / 3;
 
-        $mailchimpAudiences = $this->getMailchimpAudiences()['lists'];
+        $mailchimpAudiences = $MailChimpClient->getAudiences()['lists'];
 
         $audienceSelect = array_reduce(
             $mailchimpAudiences,
@@ -343,7 +327,7 @@ dd($mailchimpData);
         $tagsSelect->sortable = false;
         $tagsSelect->columnWidth = 100 / 3;
 
-        $audienceTags = $this->getMailchimpTags($this->mailchimp_audience_id);
+        $audienceTags = $MailChimpClient->getTags($this->mailchimp_audience_id);
 
         foreach ($audienceTags as $audienceTag) {
             $tagsSelect->addOption($audienceTag['name'], $audienceTag['name']);
@@ -399,7 +383,7 @@ dd($mailchimpData);
         );
 
         $mailchimpMergeFields = array_filter(
-            $this->getMailchimpMergeFields($this->mailchimp_audience_id)['merge_fields'],
+            $MailChimpClient->getMergeFields($this->mailchimp_audience_id)['merge_fields'],
             fn ($mergeField) => $mergeField['type'] !== 'address'
         );
 
@@ -437,7 +421,7 @@ dd($mailchimpData);
         $addressAssociationFieldset->collapsed = Inputfield::collapsedNever;
 
         $addressMergeFields = array_filter(
-            $this->getMailchimpMergeFields($this->mailchimp_audience_id)['merge_fields'],
+            $MailChimpClient->getMergeFields($this->mailchimp_audience_id)['merge_fields'],
             fn ($mergeField) => $mergeField['type'] === 'address'
         );
 
@@ -455,11 +439,11 @@ dd($mailchimpData);
         $interestCategoryAssociationFieldset = $modules->get('InputfieldFieldset');
         $interestCategoryAssociationFieldset->label = __('Mailchimp groups/interests');
         $interestCategoryAssociationFieldset->description = __(
-            "Fields may be configured as groups which are referred to as 'group names' in Mailchimp. Leave blank to exclude if not required."
+            "Fields may be configured as groups in Mailchimp. Leave blank to exclude."
         );
         $interestCategoryAssociationFieldset->collapsed = Inputfield::collapsedNever;
 
-        $interestCategories = $this->getMailchimpInterestCategories($this->mailchimp_audience_id);
+        $interestCategories = $MailChimpClient->getInterestCategories($this->mailchimp_audience_id);
 
         $fieldsAdded = 0;
 
@@ -717,132 +701,4 @@ dd($mailchimpData);
 
         return $fieldset;
     }
-
-    /**
-     * Mailchimp API
-     */
-
-    /**
-     * Create the Mailchimp API client
-     */
-    public function mailchimpClient(): MailChimp
-    {
-        if ($this->mailchimpClient) {
-            return $this->mailchimpClient;
-        }
-
-        return $this->mailchimpClient = new MailChimp($this->mailchimp_api_key);
-    }
-
-    /**
-     * Get all Mailchimp audiences (lists)
-     * Returns the API response body
-     */
-    private function getMailchimpAudiences(): array
-    {
-        if (count($this->mailchimpAudiences)) {
-            return $this->mailchimpAudiences;
-        }
-
-        return $this->mailchimpAudiences = $this->mailchimpClient()->get('lists');
-    }
-
-    /**
-     * Gets the merge fields for a given audience ID
-     * Memoizes results by audience ID
-     * Returns the API response body
-     */
-    private function getMailchimpMergeFields(string $audienceId): array
-    {
-        [
-            'audienceId' => $fetchedAudienceId,
-            'mergeFields' => $fetchedMergeFields,
-        ] = $this->mailchimpMergeFields;
-
-        if (count($fetchedMergeFields) && $audienceId === $fetchedAudienceId) {
-            return $fetchedMergeFields;
-        }
-
-        $mergeFields = $this->mailchimpClient()->get("lists/{$audienceId}/merge-fields");
-
-        $this->mailchimpMergeFields = ['audienceId' => $audienceId, 'mergeFields' => $mergeFields];
-
-        return $mergeFields;
-    }
-
-    /**
-     * Gets available tags for a given audience ID
-     */
-    private function getMailchimpTags(string $audienceId): array
-    {
-        $segments = $this->getMailchimpSegments($audienceId)['segments'];
-
-        return array_filter($segments, fn ($segment) => $segment['type'] === 'static');
-    }
-
-    /**
-     * Gets segments for a given audience ID
-     * Memoizes data by audience ID
-     */
-    private function getMailchimpSegments(string $audienceId): array
-    {
-        [
-            'audienceId' => $fetchedAudienceId,
-            'segments' => $fetchedSegments,
-        ] = $this->mailchimpSegments;
-
-        if (count($fetchedSegments) && $audienceId === $fetchedAudienceId) {
-            return $fetchedSegments;
-        }
-
-        $segments = $this->mailchimpClient()->get("lists/{$audienceId}/segments");
-
-        $this->mailchimpSegments = ['audienceId' => $audienceId, 'segments' => $segments];
-
-        return $segments;
-    }
-
-    /**
-     * Gets interest categories for a given audience ID
-     * Memoizes data by audience ID
-     */
-    private function getMailchimpInterestCategories(string $audienceId): array
-    {
-        [
-            'audienceId' => $fetchedAudienceId,
-            'interestCategories' => $fetchedInterestCategories,
-        ] = $this->mailchimpInterestCategories;
-
-        if (count($fetchedInterestCategories) && $audienceId === $fetchedAudienceId) {
-            return $fetchedInterestCategories;
-        }
-
-        $interestCategories = [];
-
-        $categories = $this->mailchimpClient()->get("lists/{$audienceId}/interest-categories");
-
-        foreach ($categories['categories'] as $category) {
-            // Get the interests link from the response to call API
-            $interestsEndpoint = array_reduce($category['_links'], function($match, $link) {
-                if ($link['rel'] !== 'interests') {
-                    return $match;
-                }
-
-                return $match = explode('3.0/', $link['href'])[1];
-            });
-
-            $interestCategories[] = [
-                'category' => $category,
-                'interests' => $this->mailchimpClient()->get($interestsEndpoint),
-            ];
-        }
-
-        $this->mailchimpInterestCategories = [
-            'audienceId' => $audienceId,
-            'interestCategories' => $interestCategories
-        ];
-
-        return $interestCategories;
-    }
-
 }

@@ -4,15 +4,10 @@ namespace ProcessWire;
 
 wire('classLoader')->addNamespace('FormBuilderProcessorMailchimp\App', __DIR__ . '/app');
 
-use FormBuilderProcessorMailchimp\App\MailChimp;
+use FormBuilderProcessorMailchimp\App\MailChimpClient;
 
 class FormBuilderProcessorMailchimpConfig extends ModuleConfig
 {
-    /**
-     * Mailchimp API client
-     */
-    private ?Mailchimp $mailchimpClient = null;
-
     /**
      * {@inheritdoc}
      */
@@ -68,9 +63,11 @@ class FormBuilderProcessorMailchimpConfig extends ModuleConfig
         $inputfields->add($apiKey);
 
         if ($config->mailchimp_api_key) {
-            $this->mailchimpClient($config->mailchimp_api_key)->get('lists');
+            $mailChimpClient = MailChimpClient::init($config->mailchimp_api_key);
 
-            $httpCode = $this->mailchimpClient()->getLastResponse()['headers']['http_code'];
+            $mailChimpClient->getAudiences();
+
+            $httpCode = $mailChimpClient->mailChimp->getLastResponse()['headers']['http_code'];
 
             if ($httpCode === 401) {
                 $this->wire->error(
@@ -103,12 +100,12 @@ class FormBuilderProcessorMailchimpConfig extends ModuleConfig
     /**
      * Create the Mailchimp API client
      */
-    public function mailchimpClient(?string $apiKey = null): MailChimp
+    public function mailChimpClient(?string $apiKey = null): MailChimp
     {
-        if ($this->mailchimpClient) {
-            return $this->mailchimpClient;
+        if ($this->mailChimpClient) {
+            return $this->mailChimpClient;
         }
 
-        return $this->mailchimpClient = new MailChimp($apiKey);
+        return $this->mailChimpClient = new MailChimp($apiKey);
     }
 }
