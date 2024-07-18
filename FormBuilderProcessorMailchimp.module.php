@@ -45,7 +45,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         if (!$this->isSubmittableToMailchimp($postData)) {
             return;
         }
-
+dd($this->{"{$this->mailchimp_audience_id}__date_formats"});
         $mailchimpData = $this->getMailchimpRequestData($postData);
 dd($mailchimpData);
         // dd('fired', $this->input->post->getArray(), $this->fbForm->children, $mailchimpData, 'end');
@@ -83,7 +83,7 @@ dd($mailchimpData);
      */
     private function isSubmittableToMailchimp(array $postData): bool
     {
-        $optInCheckbox = $this->{"{$this->mailchimp_audience_id}__form_opt_in_checkbox"};
+        $optInCheckbox = $this->{$this->optInCheckboxConfigName()};
 
         if (!$optInCheckbox) {
             return true;
@@ -110,9 +110,9 @@ dd($mailchimpData);
         ]);
 
         return array_filter([
-            'email_address' => $postData[$this->{"{$audienceId}__email_address"}],
+            'email_address' => $postData[$this->emailAddressConfigName()],
             'merge_fields' => $mergeFields,
-            'tags' => $this->{"{$audienceId}__audience_tags"},
+            'tags' => $this->{$this->audienceTagConfigName()},
             'status' => 'subscribed',
         ]);
     }
@@ -197,13 +197,6 @@ dd($mailchimpData);
         $fields = $this->fbForm->children;
         $value = $data[$fieldName] ?? null;
 
-        if ($fields[$fieldName]->type === 'Datetime') {
-            // dateInputFormat
-            $date = new DateTimeImmutable($value);
-            dump($date->format());
-            dump($fields[$fieldName], $fields[$fieldName]->value);
-        }
-
         // Unrecognized field or no value
         if (is_null($fields[$fieldName]) || !$value) {
             return null;
@@ -211,10 +204,27 @@ dd($mailchimpData);
 
         $value = match ($fields[$fieldName]->type) {
             'Page' => wire('pages')->get($value)?->title,
+            'Datetime' => $this->convertDateForMailchimp($value),
             default => $value,
         };
 
         return trim($value);
+    }
+
+    /**
+     * Convert a date
+     * @param  string $date [description]
+     * @return [type]       [description]
+     */
+    private function convertDateForMailchimp(?string $date): ?string
+    {
+        if (!$date) {
+            return null;
+        }
+
+        $dateTime = new DateTimeImmutable($date);
+
+        return $dateTime->format(self::DATE_FORMATS['MM/DD']);
     }
 
     /**
@@ -314,7 +324,7 @@ dd($mailchimpData);
         /**
          * Audience Tags
          */
-        $audienceTagConfigName = "{$this->mailchimp_audience_id}__audience_tags";
+        $audienceTagConfigName = $this->audienceTagConfigName();
 
         $tagsSelect = $modules->get('InputfieldAsmSelect');
         $tagsSelect->attr('name', $audienceTagConfigName);
@@ -338,7 +348,7 @@ dd($mailchimpData);
         /**
          * Opt-In Checkbox
          */
-        $optInCheckboxSelectConfigName = "{$this->mailchimp_audience_id}__form_opt_in_checkbox";
+        $optInCheckboxSelectConfigName = $this->optInCheckboxConfigName();
 
         $optInCheckboxSelect = $modules->get('InputfieldSelect');
         $optInCheckboxSelect->attr('name', $optInCheckboxSelectConfigName);
@@ -463,7 +473,52 @@ dd($mailchimpData);
 
         $inputfields->add($interestCategoryAssociationFieldset);
 
+
+        /**
+         * Date field formats
+         * Internal field, not user configurable. Stores formats for merge fields from API for later
+         * form processing, hidden from user
+         */
+        $dateFormatsConfigName = $this->dateFormatsConfigName();
+
+        $dateFormatsField = $modules->get('InputfieldTextarea');
+        $dateFormatsField->attr('name', $dateFormatsConfigName);
+        $dateFormatsField->label = 'Mailchimp merge field date formats';
+        $dateFormatsField->description = 'For internal use only';
+        $dateFormatsField->collapsed = Inputfield::collapsedYesLocked;
+        $dateFormatsField->attr('style', $dateFormatsField->attr('style') . ' display: none !important;');
+        $dateFormatsField->wrapAttr('style', $dateFormatsField->attr('style') . ' display: none !important;');
+
+        $dateFormatsField->attr(
+            'value',
+            $this->createMergeFieldDateFormatData($mailchimpMergeFields)
+        );
+
+        $inputfields->add($dateFormatsField);
+
         return $inputfields;
+    }
+
+    /**
+     * Parses all merge fields for any date format specifications and creates a storable value
+     */
+    private function createMergeFieldDateFormatData(array $mailchimpMergeFields): string
+    {
+        $dateFormats = array_reduce($mailchimpMergeFields, function($formats, $mergeField) {
+            ['type' => $type, 'tag' => $tag, 'options' => $options] = $mergeField;
+
+            if ($type !== 'birthday' && $type !== 'date') {
+                return $formats;
+            }
+
+            if (array_key_exists('date_format', $options)) {
+                $formats[$tag] = $options['date_format'];
+            }
+
+            return $formats;
+        }, []);
+
+        return json_encode($dateFormats);
     }
 
     /**
@@ -472,34 +527,34 @@ dd($mailchimpData);
     private function createAddressMergeFieldsConfiguration(array $mergeField): ?InputfieldFieldset
     {
         [
-            'tag' => $mcTag,
-            'name' => $mcName,
-            'type' => $mcType,
-            'required' => $mcRequired,
-            'options' => $mcOptions,
+            'tag' => $tag,
+            'name' => $name,
+            'type' => $type,
+            'required' => $required,
+            'options' => $options,
         ] = $mergeField;
 
-        if ($mcType !== 'address') {
+        if ($type !== 'address') {
             return null;
         }
 
         $fieldset = $this->wire()->modules->InputfieldFieldset;
-        $fieldset->label = "{$mcName} - {$mcTag}";
+        $fieldset->label = "{$name} - {$tag}";
         $fieldset->description = __('Address fields are limited to 45 characters.');
         $fieldset->collapsed = Inputfield::collapsedNever;
         $fieldset->themeBorder = 'hide';
-        $fieldset->notes = $this->createInputfieldNotesFromMergeFieldOptions($mcOptions);
+        $fieldset->notes = $this->createInputfieldNotesFromMergeFieldOptions($options);
         $fieldset->themeColor = 'none';
 
-        $configFieldNameBase = "{$this->mailchimp_audience_id}_address_merge_tag-{$mcTag}";
+        $configNameBase = "{$this->mailchimp_audience_id}_address_merge_tag-{$tag}";
 
         $fieldNames = (object) [
-            'addr1' => "{$configFieldNameBase}-addr1",
-            'addr2' => "{$configFieldNameBase}-addr2",
-            'city' => "{$configFieldNameBase}-city",
-            'state' => "{$configFieldNameBase}-state",
-            'zip' => "{$configFieldNameBase}-zip",
-            'country' => "{$configFieldNameBase}-country",
+            'addr1' => "{$configNameBase}-addr1",
+            'addr2' => "{$configNameBase}-addr2",
+            'city' => "{$configNameBase}-city",
+            'state' => "{$configNameBase}-state",
+            'zip' => "{$configNameBase}-zip",
+            'country' => "{$configNameBase}-country",
         ];
 
         $columnWidth = 100 / 3;
@@ -508,7 +563,7 @@ dd($mailchimpData);
         $addr1Config = $this->createFormFieldSelect($fieldNames->addr1, __('Street Address'), [
             'columnWidth' => $columnWidth,
             'notes' => __('Required by Mailchimp'),
-            'required' => $mcRequired,
+            'required' => $required,
         ]);
 
         $fieldset->add($addr1Config);
@@ -524,7 +579,7 @@ dd($mailchimpData);
         $cityConfig = $this->createFormFieldSelect($fieldNames->city, __('City'), [
             'columnWidth' => $columnWidth,
             'notes' => __('Required by Mailchimp'),
-            'required' => $mcRequired,
+            'required' => $required,
         ]);
 
         $fieldset->add($cityConfig);
@@ -533,7 +588,7 @@ dd($mailchimpData);
         $stateConfig = $this->createFormFieldSelect($fieldNames->state, __('State/Prov/Region'), [
             'columnWidth' => $columnWidth,
             'notes' => __('Required by Mailchimp'),
-            'required' => $mcRequired,
+            'required' => $required,
         ]);
 
         $fieldset->add($stateConfig);
@@ -542,7 +597,7 @@ dd($mailchimpData);
         $zipConfig = $this->createFormFieldSelect($fieldNames->zip, __('Postal/Zip'), [
             'columnWidth' => $columnWidth,
             'notes' => __('Required by Mailchimp'),
-            'required' => $mcRequired,
+            'required' => $required,
         ]);
 
         $fieldset->add($zipConfig);
@@ -550,7 +605,7 @@ dd($mailchimpData);
         // Country
         $countryConfig = $this->createFormFieldSelect($fieldNames->country, __('Country'), [
             'columnWidth' => $columnWidth,
-            'required' => $mcRequired,
+            'required' => $required,
         ]);
 
         $fieldset->add($countryConfig);
@@ -563,7 +618,7 @@ dd($mailchimpData);
      */
     private function createEmailMergeFieldConfiguration(): ?InputfieldSelect
     {
-        $fieldName = "{$this->mailchimp_audience_id}__email_address";
+        $fieldName = $this->emailAddressConfigName();
         $fieldLabel = __('Email Address');
 
         return $this->createFormFieldSelect($fieldName, "{$fieldLabel} - EMAIL", [
@@ -579,18 +634,18 @@ dd($mailchimpData);
     private function createMergeFieldConfiguration(array $mergeField): ?InputfieldSelect
     {
         [
-            'tag' => $mcTag,
-            'name' => $mcName,
-            'required' => $mcRequired,
-            'options' => $mcOptions,
+            'tag' => $tag,
+            'name' => $name,
+            'required' => $required,
+            'options' => $options,
         ] = $mergeField;
 
-        $fieldName = "{$this->mailchimp_audience_id}_merge_tag__{$mcTag}";
+        $fieldName = $this->mergeFieldConfigName($tag);
 
-        return $this->createFormFieldSelect($fieldName, "{$mcName} - {$mcTag}", [
+        return $this->createFormFieldSelect($fieldName, "{$name} - {$tag}", [
             'columnWidth' => 100 / 3,
-            'required' => $mcRequired,
-            'notes' => $this->createInputfieldNotesFromMergeFieldOptions($mcOptions),
+            'required' => $required,
+            'notes' => $this->createInputfieldNotesFromMergeFieldOptions($options),
         ]);
     }
 
@@ -601,23 +656,16 @@ dd($mailchimpData);
     {
         ['category' => $mcCategory, 'interests' => $mcInterests] = $interestCategory;
 
-        [
-            'id' => $mcCategoryId,
-            'type' => $mcCategoryType,
-            'title' => $mcCategoryTitle
-        ] = $mcCategory;
-
-        $fieldName = "{$this->mailchimp_audience_id}_interest_category__{$mcCategoryId}";
+        ['id' => $categoryId, 'type' => $categoryType, 'title' => $categoryTitle] = $mcCategory;
 
         // Create notes
-        $interestNames = array_map(fn ($interest) => $interest['name'], $mcInterests['interests']);
+        $interests = array_map(fn ($interest) => $interest['name'], $mcInterests['interests']);
 
-        $notes = implode('. ', [
-            "Type: {$mcCategoryType}",
-            'Values: ' . implode(', ', $interestNames),
-        ]);
+        $notes = implode('. ', ["Type: {$categoryType}", 'Values: ' . implode(', ', $interests)]);
 
-        return $this->createFormFieldSelect($fieldName, $mcCategoryTitle, [
+        $fieldName = $this->interestCategoryConfigName($categoryId);
+
+        return $this->createFormFieldSelect($fieldName, $categoryTitle, [
             'columnWidth' => 100 / 3,
             'notes' => $notes,
         ]);
@@ -700,5 +748,40 @@ dd($mailchimpData);
         }
 
         return $fieldset;
+    }
+
+    /**
+     * Action config name generators
+     * Creates the config names that are used to store per-audience configuration data
+     */
+
+    private function interestCategoryConfigName(string $categoryId): string
+    {
+        return "{$this->mailchimp_audience_id}_interest_category__{$categoryId}";
+    }
+
+    private function mergeFieldConfigName(string $mergeTag): string
+    {
+        return "{$this->mailchimp_audience_id}_merge_tag__{$mergeTag}";
+    }
+
+    private function dateFormatsConfigName(): string
+    {
+        return "{$this->mailchimp_audience_id}__date_formats";
+    }
+
+    private function audienceTagConfigName(): string
+    {
+        return "{$this->mailchimp_audience_id}__audience_tags";
+    }
+
+    private function optInCheckboxConfigName(): string
+    {
+        return "{$this->mailchimp_audience_id}__form_opt_in_checkbox";
+    }
+
+    private function emailAddressConfigName(): string
+    {
+        return "{$this->mailchimp_audience_id}__email_address";
     }
 }
