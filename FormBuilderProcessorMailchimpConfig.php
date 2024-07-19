@@ -4,7 +4,8 @@ namespace ProcessWire;
 
 wire('classLoader')->addNamespace('FormBuilderProcessorMailchimp\App', __DIR__ . '/app');
 
-use FormBuilderProcessorMailchimp\App\MailChimpClient;
+use Exception;
+use FormBuilderProcessorMailchimp\App\MailchimpClient;
 
 class FormBuilderProcessorMailchimpConfig extends ModuleConfig
 {
@@ -54,20 +55,31 @@ class FormBuilderProcessorMailchimpConfig extends ModuleConfig
         $inputfields = parent::getInputfields();
         $config = $this->getModuleConfig();
 
-        $apiKey = $this->modules->get('InputfieldText');
-        $apiKey->name = 'mailchimp_api_key';
-        $apiKey->label = __('Mailchimp API Key');
-        $apiKey->collapsed = Inputfield::collapsedNever;
-        $apiKey->required = true;
-
-        $inputfields->add($apiKey);
+        $inputfields->add([
+            'mailchimp_api_key' => [
+                'type' => 'InputfieldText',
+                'label' => __('Mailchimp API Key'),
+                'collapsed' => Inputfield::collapsedNever,
+                'required' => true,
+            ]
+        ]);
 
         if ($config->mailchimp_api_key) {
-            $mailChimpClient = MailChimpClient::init($config->mailchimp_api_key);
+            $headers = null;
 
-            $mailChimpClient->getAudiences();
+            try {
+                $mailchimpClient = MailchimpClient::init($config->mailchimp_api_key);
 
-            $httpCode = $mailChimpClient->mailChimp->getLastResponse()['headers']['http_code'];
+                $mailchimpClient->getAudiences();
+
+                $headers = $mailchimpClient->mailChimp->getLastResponse()['headers'];
+            } catch (Exception $e) {
+                $this->wire->error($e->getMessage());
+
+                return $inputfields;
+            }
+
+            $httpCode = $headers['http_code'];
 
             if ($httpCode === 401) {
                 $this->wire->error(
@@ -91,21 +103,5 @@ class FormBuilderProcessorMailchimpConfig extends ModuleConfig
         }
 
         return $inputfields;
-    }
-
-    /**
-     * Mailchimp API
-     */
-
-    /**
-     * Create the Mailchimp API client
-     */
-    public function mailChimpClient(?string $apiKey = null): MailChimp
-    {
-        if ($this->mailChimpClient) {
-            return $this->mailChimpClient;
-        }
-
-        return $this->mailChimpClient = new MailChimp($apiKey);
     }
 }
