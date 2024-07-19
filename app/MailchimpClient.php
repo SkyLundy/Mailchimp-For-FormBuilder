@@ -6,7 +6,7 @@ namespace FormBuilderProcessorMailchimp\App;
 
 use FormBuilderProcessorMailchimp\App\MailChimp;
 
-class MailChimpClient
+class MailchimpClient
 {
 
     /**
@@ -62,6 +62,14 @@ class MailChimpClient
     public function subscribe(array $subscriberData, string $audienceId): mixed
     {
         return $this->mailChimp->post("lists/{$audienceId}/members", $subscriberData);
+    }
+
+    /**
+     * Adds a new subscriber or updates and existing subscriber
+     */
+    public function subscribeOrUpdate(array $subscriberData, $audienceId): mixed
+    {
+        return $this->mailChimp->put("lists/{$audienceId}/members", $subscriberData);
     }
 
     /**

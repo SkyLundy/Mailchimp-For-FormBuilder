@@ -2,24 +2,20 @@
 
 A highly configurable add-on for the ProcessWire FormBuilder module that adds Mailchimp list subscriptions to new and existing forms.
 
+This is alpha software. Please test thoroughly and file issues if you encounter bugs.
+
 ## Features
 
-FormBuilderProcessorMailchimp provides the ability to submit subscribers to Mailchimp Audiences (mailing lists). Forms can send to specific lists, or to a global list configured within the module.
-
-- Add or remove Mailchimp processing to new or existing forms.
+- Add Mailchimp processing to new or existing forms.
 - Specify which form fields will be submitted to Mailchimp
 - Optionally include and configure an 'opt-in' checkbox for your forms
-- Native FormBuilder integration can be added per-form form via the "Actions" config
 - Can be added as an additional processing method alongside existing FormBuilder form actions
-- Uses the Mailchimp API and API key to submit list subscriptions
-- Submit to Mailchimp using a global API key, and/or configure an individual API key for each form
-- Submit to Audiences (lists) using a global configuration, and/or configure a specific Audience for each form
+- Submit subscriber information to any audience/list in Mailchimp
+- Use audience tags configured in Mailchimp to organize contacts as they're added to Mailchimp audiences
 
-Fields are automatically converted to Mailchimp-friendly values where necessary.
+Fields are automatically converted to Mailchimp-friendly values where necessary, datetime field values are automatically converted to the format configured in Mailchimp.
 
-- Checkboxes fields are converted to an array of selected values
-- Select Multiple fields are converted to an array of selected values
-- Page Select fields use the name of the selected page as the value
+All fieldtypes with the exception of image/file upload fields are supported.
 
 ## Requirements
 
@@ -30,16 +26,19 @@ Fields are automatically converted to Mailchimp-friendly values where necessary.
 
 ## Installation
 
-Download the .zip from the Github repository, unzip into /site/modules, install module via Admin
+Download the .zip from the Github repository, unzip into /site/modules, install module Admin
 
 ## Usage
 
 - Install module
-- Configure optional global API key and global Audience ID
-- Use the 'Actions' tab when configuring a FormBuilder form to add Mailchimp processing
-- Specify an optional opt-in field
-- Specify which fields should be submitted to Mailchimp and configure field names to their FormBuilder field counterparts
+- Add API key on the module configuration page
+- Use the 'Actions' tab when configuring a form to add Mailchimp processing
+- Select a Mailchimp Audience, save, then return to the action configuration to continue setting up your Mailchimp integration.
 
-If a global API key is not provided, an API key will be required for each form individually. If a global API key is provided, an alternate API key can be provided per-form to override the global value where desired.
+Each field in Mailchimp audience will be displayed along with a select element to associate a form field. Fields that are required in Mailchimp are required when configuring your integration. Associate all fields, or only the fields you need.
 
-If a global Audience ID is not provided, an Audience ID will be required for each form individually. If a global Audience ID is provided, an alternate Audience ID can be provided per-form to override the global value where desired.
+Some field association select inputs may display notes that can help you configure your form to work with Mailchimp. These may include accepted values for Mailchimp radio/select/checkbox fields, formatting, or character limits. Ensure that your fields submit data that Mailchimp will accept.
+
+Field associations and integration settings are saved individually for each Mailchimp audience so it is possible to switch between audiences and maintain unique configurations.
+
+Mailchimp Processor supports all fields except image/file fields.
