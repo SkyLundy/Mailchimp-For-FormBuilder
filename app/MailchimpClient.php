@@ -43,7 +43,7 @@ class MailchimpClient
     ];
 
     private function __construct(
-        public MailChimp $mailChimp
+        public MailChimp $mailchimp
     ) {}
 
     /**
@@ -51,9 +51,9 @@ class MailchimpClient
      */
     public static function init(string $apiKey): self
     {
-        $mailChimp = new MailChimp($apiKey);
+        $mailchimp = new MailChimp($apiKey);
 
-        return new self($mailChimp);
+        return new self($mailchimp);
     }
 
     /**
@@ -61,7 +61,7 @@ class MailchimpClient
      */
     public function subscribe(array $subscriberData, string $audienceId): mixed
     {
-        return $this->mailChimp->post("lists/{$audienceId}/members", $subscriberData);
+        return $this->mailchimp->post("lists/{$audienceId}/members", $subscriberData);
     }
 
     /**
@@ -69,7 +69,7 @@ class MailchimpClient
      */
     public function subscribeOrUpdate(array $subscriberData, $audienceId): mixed
     {
-        return $this->mailChimp->put("lists/{$audienceId}/members", $subscriberData);
+        return $this->mailchimp->put("lists/{$audienceId}/members", $subscriberData);
     }
 
     /**
@@ -82,7 +82,7 @@ class MailchimpClient
             return $this->audiences;
         }
 
-        return $this->audiences = $this->mailChimp->get('lists');
+        return $this->audiences = $this->mailchimp->get('lists');
     }
 
     /**
@@ -101,7 +101,11 @@ class MailchimpClient
             return $fetchedMergeFields;
         }
 
-        $mergeFields = $this->mailChimp->get("lists/{$audienceId}/merge-fields");
+        $mergeFields = $this->mailchimp->get("lists/{$audienceId}/merge-fields");
+
+        if (!$mergeFields) {
+            return $this->mergeFields;
+        }
 
         $this->mergeFields = ['audienceId' => $audienceId, 'mergeFields' => $mergeFields];
 
@@ -133,7 +137,11 @@ class MailchimpClient
             return $fetchedSegments;
         }
 
-        $segments = $this->mailChimp->get("lists/{$audienceId}/segments");
+        $segments = $this->mailchimp->get("lists/{$audienceId}/segments");
+
+        if (!$segments) {
+            return $this->segments;
+        }
 
         $this->segments = ['audienceId' => $audienceId, 'segments' => $segments];
 
@@ -157,7 +165,11 @@ class MailchimpClient
 
         $interestCategories = [];
 
-        $categories = $this->mailChimp->get("lists/{$audienceId}/interest-categories");
+        $categories = $this->mailchimp->get("lists/{$audienceId}/interest-categories");
+
+        if (!$categories) {
+            return $this->interestCategories;
+        }
 
         foreach ($categories['categories'] as $category) {
             // Get the interests link from the response to call API
@@ -171,7 +183,7 @@ class MailchimpClient
 
             $interestCategories[] = [
                 'category' => $category,
-                'interests' => $this->mailChimp->get($interestsEndpoint),
+                'interests' => $this->mailchimp->get($interestsEndpoint),
             ];
         }
 

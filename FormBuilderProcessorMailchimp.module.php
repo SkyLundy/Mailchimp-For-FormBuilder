@@ -17,12 +17,12 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
     /**
      * Name of ProcessWire log
      */
-    private const LOG_NAME = 'fb-mailchimp';
+    private const LOG_NAME = 'formbuilder-processor-mailchimp';
 
     /**
      * Process submitted form
      */
-    public function processReady()
+    public function processReady(): void
     {
         if (!$this->mailchimp_audience_id || !$this->mailchimp_api_ready) {
             return;
@@ -35,27 +35,26 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         }
 
         $mailchimpData = $this->parseFormSubmission($postData);
-dd($mailchimpData);
-        // dd('fired', $this->input->post->getArray(), $this->fbForm->children, $mailchimpData, 'end');
 
-        $result = $this->___subscribe($mailchimpData);
+        if (!$mailchimpData) {
+            return;
+        }
 
-        bd($result);
+        dd($mailchimpData);
 
-        // $this->logResult($result);
-    }
+        $mailchimpClient = $this->___subscribe($mailchimpData);
 
-    /**
-     * Logs an error if encountered
-     */
-    private function logResult(array $result): void
-    {
-        $result = json_encode($result ?: ['No response data']);
-        dd($result);
+        // Log JSON response body
+        wire('log')->save(
+            self::LOG_NAME,
+            $mailchimpClient->mailchimp->getLastResponse()['body']
+        );
     }
 
     /**
      * Submit subscription to Mailchimp
+     * @param array<string, mixed> $subscriberData Processed POST data for submission
+     * @param string               $audienceId     Optional audience ID override for hooking
      */
     public function ___subscribe(array $subscriberData, ?string $audienceId = null): MailchimpClient
     {
@@ -65,7 +64,7 @@ dd($mailchimpData);
 
         match ($subscriptionAction) {
             'add_update' => $mailchimpClient->subscribeOrUpdate($subscriberData, $audienceId),
-            default => $mailchimpClient->subscribe($subscriberData, $audienceId),
+            'add' => $mailchimpClient->subscribe($subscriberData, $audienceId),
         };
 
         return $mailchimpClient;
@@ -76,7 +75,7 @@ dd($mailchimpData);
      * - If there is a checkbox designated as an opt-in and whether this submission qualifies
      * - There are configured form/Mailchimp field pairs
      */
-    private function isMailchimpSubmittable(array $postData): bool
+    private function isMailchimpSubmittable(array $formData): bool
     {
         $mergeTagConfigPrefix = $this->fieldConfig()->mergeTag['prefix'];
 
@@ -98,33 +97,62 @@ dd($mailchimpData);
         }
 
         // Opt-in checkbox is configured but value isn't present in the POST data
-        if (!array_key_exists($optInCheckbox, $postData) && $optInCheckbox) {
+        if (!array_key_exists($optInCheckbox, $formData) && $optInCheckbox) {
             return false;
         }
 
-        return filter_var($postData[$optInCheckbox], FILTER_VALIDATE_BOOLEAN);
+        return filter_var($formData[$optInCheckbox], FILTER_VALIDATE_BOOLEAN);
     }
 
     /**
      * Parses POST data and prepares Mailchimp payload according to configuration
+     * @param array<string, mixed> $formData Form submission data
      */
-    private function parseFormSubmission(array $postData): array
+    private function parseFormSubmission(array $formData): array
     {
         $mergeFields = array_filter([
-            ...$this->getSubmissionMergeFieldData($postData),
-            ...$this->getSubmissionAddressData($postData),
+            ...$this->getSubmissionMergeFieldData($formData),
+            ...$this->getSubmissionAddressData($formData),
         ]);
 
-        $emailConfigName = $this->fieldConfig()->emailAddress['name'];
+        $emailConfigName = $this->fieldConfig()->emailAddress['value'];
 
         return array_filter([
-            'email_address' => $postData[$emailConfigName],
+            'email_address' => $formData[$emailConfigName],
             'merge_fields' => $mergeFields,
-            'interests' => $this->getSubmissionInterestCategoriesData($postData),
+            'interests' => $this->getSubmissionInterestCategoriesData($formData),
             'tags' => $this->fieldConfig()->audienceTags['value'],
             'ip_signup' => $this->getSubscriberIp(),
-            'status' => 'subscribed',
+            ...$this->getSubscriberStatus(),
         ]);
+    }
+
+    /**
+     * Create submission parameters for subscriber status
+     */
+    private function getSubscriberStatus(): array
+    {
+        $subscriptionAction = $this->fieldConfig()->subscriptionAction['value'];
+
+        // Unsubscribe
+        if ($subscriptionAction = 'unsubscribe') {
+            return [
+                'status' => 'unsubscribed',
+            ];
+        }
+
+        // Only add new
+        if ($subscriptionAction === 'add') {
+            return [
+                'status' => $this->fieldConfig()->subscriberStatus['value'],
+            ];
+        }
+
+        // Add new, update existing
+        return [
+            'status_if_new' => $this->fieldConfig()->subscriberStatus['value'],
+            'status' => $this->fieldConfig()->subscriberUpdateStatus['value'],
+        ];
     }
 
     /**
@@ -137,72 +165,37 @@ dd($mailchimpData);
 
     /**
      * Parses POST data for configured fields/data to submit to mailchimp
+     * @param array<string, mixed> $formData Form submission data
      */
-    private function getSubmissionMergeFieldData(array $postData): array
+    private function getSubmissionMergeFieldData(array $formData): array
     {
-        ['prefix' => $configPrefix] = $this->fieldConfig()->mergeField;
+        $mergeFields = $this->getConfiguredMergeFields();
 
-        // Pull merge tag/form field configs
-        $mergeTagConfigs = array_filter(
-            $this->data,
-            fn ($value, $name) => str_starts_with($name, $configPrefix) && !empty($value),
-            ARRAY_FILTER_USE_BOTH
-        );
+        // Convert merge tag config value to form value, [MERGETAG => 'submitted value']
+        array_walk($mergeFields, function(&$formField, $mergeTag) use ($formData) {
+            $formField = $this->getSubmissionMergeFieldValue($mergeTag, $formField, $formData);
+        });
 
-        if (!$mergeTagConfigs) {
-            return [];
-        }
-
-        $mergeTagConfigKeys = array_keys($mergeTagConfigs);
-
-        // Convert array of form configs from
-        // [
-        //     'XXXXXXXXXX_address_merge_tag__TAGNAME' => 'form_field_name',
-        // ]
-        //
-        // To array of Mailchimp submittable data
-        // [
-        //     'TAGNAME' => 'submitted form value'
-        // ]
-        $mailchimpData = array_reduce(
-            $mergeTagConfigKeys,
-            function($data, $mergeTagConfigKey) use ($mergeTagConfigs, $postData, $configPrefix) {
-                // Remove prefix to get Mailchimp merge tag name
-                $mergeTag = ltrim($mergeTagConfigKey, $configPrefix);
-
-                $formFieldName = $mergeTagConfigs[$mergeTagConfigKey];
-
-                $data[$mergeTag] = $this->getSubmissionMergeFieldValue(
-                    $mergeTag,
-                    $formFieldName,
-                    $postData
-                );
-
-                return $data;
-            },
-            []
-        );
-
-        return array_filter($mailchimpData);
+        return array_filter($mergeFields);
     }
 
     /**
      * Gets the Mailchimp appropriate value for a given submitted form value
      * @param  string $mergeTag       Mailchimp field merge tag
      * @param  string $formFieldName  FormBuilder field name
-     * @param  array  $data           Form submission POST data
+     * @param  array  $formData       Form submission POST data
      * @return mixed                  Value in format expected by Mailchimp
      */
     private function getSubmissionMergeFieldValue(
         string $mergeTag,
         string $formFieldName,
-        array $data
+        array $formData
     ): mixed {
         $field = $this->fbForm->children[$formFieldName];
-        $value = $data[$field->name] ?? null;
+        $value = $formData[$field->name] ?? null;
 
         // Unrecognized field or no value
-        if (!array_key_exists($field->name, $data) || !$value) {
+        if (!array_key_exists($field->name, $formData) || !$value) {
             return null;
         }
 
@@ -218,51 +211,42 @@ dd($mailchimpData);
     /**
      * Get merge fields for addresses
      */
-    private function getSubmissionAddressData(array $postData): array
+    private function getSubmissionAddressData(array $formData): array
     {
-        ['prefix' => $configPrefix] = $this->fieldConfig()->mergeTag;
+        $addressFields = $this->getConfiguredAddressFields();
 
-        // Get all merge tag configs from stored form config data
-        $mergeTagConfigs = array_filter(
-            $this->data,
-            fn ($value, $name) => str_starts_with($name, $configPrefix) && !empty($value),
-            ARRAY_FILTER_USE_BOTH
-        );
+        // From [
+        //          ['mailchimpSubfield' => 'addr1'. 'formField' => 'form_field']
+        //      ]
+        // To [
+        //        'addr1' => 'Form submission value'
+        //    ]
+        $getAddressSubfieldValues = function(array $fields) use ($formData): array {
+            $addressVals = array_reduce($fields, function($subfieldData, $fields) use ($formData) {
+                ['mailchimpSubfield' => $subfield, 'formField' => $formField] = $fields;
 
-        if (!$mergeTagConfigs) {
-            return [];
-        }
+                $formDataContainsField = array_key_exists($formField, $formData);
 
-        $configKeys = array_keys($mergeTagConfigs);
+                $subfieldData[$subfield] = $formDataContainsField ? $formData[$formField] : null;
 
-        // Split config name into property name, merge tag name, and Mailchimp field name
-        return array_reduce(
-            $configKeys,
-            function($mcData, $tagConfigKey) use ($mergeTagConfigs, $postData) {
-                // Split config key XXXXXXXXXX_address_merge_tag-ADDRESS-addr1
-                [, $mergeTag, $mailchimpField] = explode('-', $tagConfigKey);
+                return $subfieldData;
+            }, []);
 
-                $mcData[$mergeTag] ??= [];
+            return array_filter($addressVals);
+        };
 
-                // Get ProcessWire field name using the full tag config key
-                $pwFieldName = $mergeTagConfigs[$tagConfigKey];
+        // Execute function to get subfield values
+        array_walk($addressFields, fn (&$fields) => $fields = $getAddressSubfieldValues($fields));
 
-                if (array_key_exists($pwFieldName, $postData)) {
-                    $mcData[$mergeTag][$mailchimpField] = trim($postData[$pwFieldName]);
-                }
-
-                return $mcData;
-            },
-            []
-        );
+        return array_filter($addressFields);
     }
 
     /**
      * Parses submission data for interest categories
-     * @param  array  $postData FormBuilder form submitted data
+     * @param  array  $formData FormBuilder form submitted data
      * @return array<string>
      */
-    private function getSubmissionInterestCategoriesData(array $postData): array
+    private function getSubmissionInterestCategoriesData(array $formData): array
     {
         ['prefix' => $configPrefix] = $this->fieldConfig()->interestCategory;
 
@@ -290,17 +274,17 @@ dd($mailchimpData);
         // ]
         $mailchimpData = array_reduce(
             $interestConfigKeys,
-            function($data, $interestConfigKey) use ($interestConfigs, $postData, $configPrefix) {
+            function($mcData, $interestConfigKey) use ($interestConfigs, $formData, $configPrefix) {
                 // Remove config prefix to get interest category ID
                 $interestCatId = ltrim($interestConfigKey, $configPrefix);
 
                 $formFieldName = $interestConfigs[$interestConfigKey];
 
-                if (array_key_exists($formFieldName, $postData)) {
-                    $data[$interestCatId] = (array) $postData[$formFieldName];
+                if (array_key_exists($formFieldName, $formData)) {
+                    $mcData[$interestCatId] = (array) $formData[$formFieldName];
                 }
 
-                return $data;
+                return $mcData;
             },
             []
         );
@@ -348,25 +332,32 @@ dd($mailchimpData);
     /**
      * Generates config names, prefixes, and values
      */
-    private function fieldConfig(string|int|null $configIdentifier = null): stdClass
-    {
+    private function fieldConfig(
+        string|int|null $configId1 = null,
+        string|int|null $configId2 = null,
+    ): stdClass {
         $audienceId = $this->mailchimp_audience_id;
 
         return (object) [
             'interestCategory' => [
-                'name' => "{$audienceId}_interest_category__{$configIdentifier}",
+                'name' => "{$audienceId}_interest_category__{$configId1}",
                 'prefix' => "{$audienceId}_interest_category__",
-                'value' => $this->{"{$audienceId}_interest_category__{$configIdentifier}"},
+                'value' => $this->{"{$audienceId}_interest_category__{$configId1}"},
             ],
             'mergeTag' => [
-                'name' => "{$audienceId}_merge_tag__{$configIdentifier}",
+                'name' => "{$audienceId}_merge_tag__{$configId1}",
                 'prefix' => "{$audienceId}_merge_tag__",
-                'value' => $this->{"{$audienceId}_merge_tag__{$configIdentifier}"},
+                'value' => $this->{"{$audienceId}_merge_tag__{$configId1}"},
             ],
-            'fieldIncluded' => [
-                'name' => "{$audienceId}_field_included__{$configIdentifier}",
-                'prefix' => "{$audienceId}_field_included__",
-                'value' => $this->{"{$audienceId}_field_included__{$configIdentifier}"},
+            'addressMergeTag' => [
+                'name' => "{$this->mailchimp_audience_id}_address_merge_tag-{$configId1}-{$configId2}",
+                'prefix' => "{$this->mailchimp_audience_id}_address_merge_tag-",
+                'value' => $this->{"{$this->mailchimp_audience_id}_address_merge_tag-{$configId1}-{$configId2}"},
+            ],
+            'mergeTagIncluded' => [
+                'name' => "{$audienceId}_merge_tag_included__{$configId1}",
+                'prefix' => "{$audienceId}_merge_tag_included__",
+                'value' => $this->{"{$audienceId}_merge_tag_included__{$configId1}"},
             ],
             'dateFormats' => [
                 'name' => "{$audienceId}__date_formats",
@@ -446,7 +437,7 @@ dd($mailchimpData);
             $mcAudienceTags = $mailchimpClient->getTags($this->mailchimp_audience_id);
             $mcInterestCategories = $mailchimpClient->getInterestCategories($this->mailchimp_audience_id);
 
-            $lastResponse = $mailchimpClient->mailChimp->getLastResponse();
+            $lastResponse = $mailchimpClient->mailchimp->getLastResponse();
 
             if ($lastResponse['headers']['http_code'] !== 200) {
                 $errorBody = json_decode($lastResponse['body']);
@@ -467,7 +458,7 @@ dd($mailchimpData);
             return $inputfields;
         }
 
-
+        $this->purgeAudienceConfigs($mcAudiences, $mcMergeFields, $mcAudienceTags, $mcInterestCategories);
 
         /**
          * Usage instructions
@@ -514,7 +505,7 @@ dd($mailchimpData);
         $submissionConfigurationFieldset = $modules->get('InputfieldFieldset');
         $submissionConfigurationFieldset->label = __('Mailchimp integration');
         $submissionConfigurationFieldset->description = __(
-            'Confguration details for where subscriptions will be submitted to and processing options'
+            'Confguration details for subscription submissions'
         );
         $submissionConfigurationFieldset->themeOffset = 'm';
         $submissionConfigurationFieldset->collapsed = Inputfield::collapsedNever;
@@ -526,7 +517,7 @@ dd($mailchimpData);
         $audienceSelect->attr('name', 'mailchimp_audience_id');
         $audienceSelect->label = __('Mailchimp audience');
         $audienceSelect->description = __('Choose the Audience (list) subscribers will be added to');
-        $audienceSelect->val($this->mailchimp_audience_id);
+        $audienceSelect->attr('value', $this->mailchimp_audience_id);
         $audienceSelect->collapsed = Inputfield::collapsedNever;
         $audienceSelect->themeBorder = 'hide';
         $audienceSelect->required = true;
@@ -601,7 +592,7 @@ dd($mailchimpData);
         $optInCheckboxSelect = $modules->get('InputfieldSelect');
         $optInCheckboxSelect->attr('name', $optInCheckboxConfig);
         $optInCheckboxSelect->label = __('Opt-in checkbox field');
-        $optInCheckboxSelect->description = __('Leave blank to send all submissions to Mailchimp');
+        $optInCheckboxSelect->description = __('Optional checkbox that must be checked to submit data to Mailchimp');
         $optInCheckboxSelect->val($this->$optInCheckboxConfig);
         $optInCheckboxSelect->collapsed = Inputfield::collapsedNever;
         $optInCheckboxSelect->themeBorder = 'hide';
@@ -635,8 +626,9 @@ dd($mailchimpData);
         $submissionConfigurationFieldset->add($optInCheckboxSelect);
 
 
-
-        // Mark subscribers as VIP
+        /**
+         * Mark Subscribers as VIP
+         */
         ['name' => $markVipConfig, 'value' => $markVipValue] = $this->fieldConfig()->markVip;
 
         $markVip = $modules->get('InputfieldCheckbox');
@@ -655,7 +647,9 @@ dd($mailchimpData);
 
 
 
-        // Collect Submitters IP Address
+        /**
+         * Collect Submitters IP Address
+         */
         ['name' => $collectIpConfig, 'value' => $collectIpValue] = $this->fieldConfig()->collectIp;
 
         $collectIp = $modules->get('InputfieldCheckbox');
@@ -671,7 +665,9 @@ dd($mailchimpData);
 
 
 
-        // Subscription action Add or Add/Update
+        /**
+         * Subscription action Add or Add/Update
+         */
         [
             'name' => $subscriptionActionConfig,
             'value' => $subscriptionActionValue,
@@ -681,21 +677,24 @@ dd($mailchimpData);
         $subscriptionAction->label = __('Subscription action');
         $subscriptionAction->collapsed = Inputfield::collapsedNever;
         $subscriptionAction->attr('name', $subscriptionActionConfig);
-        $subscriptionAction->attr('value', $subscriptionActionValue ?: 'add');
+        $subscriptionAction->attr('value', $subscriptionActionValue);
         $subscriptionAction->themeBorder = 'hide';
         $subscriptionAction->required = true;
         $subscriptionAction->columnWidth = 100 / 3;
         $subscriptionAction->themeInputWidth = 'l';
         $subscriptionAction->addOptions([
-            'add' => __('Add new subscribers only'),
-            'add_update' => __('Add new subscribers, update if already subscribed'),
+            'add' => __('Add new subscribers'),
+            'add_update' => __('Add new subscribers, update existing subscribers'),
+            'unsubscribe' => __('Unsubscribe')
         ]);
 
         $submissionConfigurationFieldset->add($subscriptionAction);
 
 
 
-        // Subscriber status
+        /**
+         * New Subscriber Status
+         */
         [
             'name' => $subscriberStatusConfig,
             'value' => $subscriberStatusValue,
@@ -713,17 +712,18 @@ dd($mailchimpData);
         $subscriberStatus->addOptions([
             'subscribed' => __('Subscribed'),
             'pending' => __('Pending (double opt-in)'),
-            'unsubscribed' => __('Unsubscribed'),
         ]);
 
         $submissionConfigurationFieldset->add($subscriberStatus);
 
 
 
-        // Subscriber status - Existing contacts
+        /**
+         * Existing Subscriber Status
+         */
         [
             'name' => $subscriberUpdateStatusConfig,
-            'name' => $subscriberUpdateStatusValue,
+            'value' => $subscriberUpdateStatusValue,
         ] = $this->fieldConfig()->subscriberUpdateStatus;
 
         $subscriberUpdateStatus = $modules->get('InputfieldSelect');
@@ -731,6 +731,7 @@ dd($mailchimpData);
         $subscriberUpdateStatus->collapsed = Inputfield::collapsedNever;
         $subscriberUpdateStatus->attr('name', $subscriberUpdateStatusConfig);
         $subscriberUpdateStatus->attr('value', $subscriberUpdateStatusValue);
+        $subscriberUpdateStatus->notes = "Recommended setting: 'Subscribed'";
         $subscriberUpdateStatus->themeBorder = 'hide';
         $subscriberUpdateStatus->required = true;
         $subscriberUpdateStatus->requiredIf = "{$subscriptionActionConfig}=add_update";
@@ -740,7 +741,6 @@ dd($mailchimpData);
         $subscriberUpdateStatus->addOptions([
             'subscribed' => __('Subscribed'),
             'pending' => __('Pending (double opt-in)'),
-            'unsubscribed' => __('Unsubscribed'),
         ]);
 
         $submissionConfigurationFieldset->add($subscriberUpdateStatus);
@@ -753,22 +753,38 @@ dd($mailchimpData);
          * Mailchimp Submitted Fields
          */
         $includedMailchimpFields = $modules->get('InputfieldFieldset');
-        $includedMailchimpFields->label = __('Mailchimp fields to submit');
+        $includedMailchimpFields->label = __('Mailchimp fields');
         $includedMailchimpFields->collapsed = Inputfield::collapsedNever;
         $includedMailchimpFields->description = __(
-            'Select the fields that form data should be sent to and then choose which form field value should be submitted below'
+            'Select the fields that form data should be sent to and then choose which form fields should be associated below'
         );
+        $includedMailchimpFields->notes = __('An email address field is required by Mailchimp and has been added automatically');
         $includedMailchimpFields->themeOffset = 'm';
+
+        foreach ($mcMergeFields as $mergeField) {
+            $includedMailchimpFields->add(
+                $this->createIncludeFieldConfiguration($mergeField)
+            );
+        }
+
+        // Add Interest Groups as a field
+        foreach ($mcInterestCategories as $interestCategory) {
+            $includedMailchimpFields->add(
+                $this->createIncludeInterestCategoryConfiguration($interestCategory)
+            );
+        }
 
 
         $inputfields->add($includedMailchimpFields);
+
+
 
 
         /**
          * Mailchimp Field Associations
          */
         $fieldAssociationFieldset = $modules->get('InputfieldFieldset');
-        $fieldAssociationFieldset->label = __('Mailchimp/form field associations');
+        $fieldAssociationFieldset->label = __('Form field associations');
         $fieldAssociationFieldset->collapsed = Inputfield::collapsedNever;
         $fieldAssociationFieldset->description = __(
             'Choose a form field to associate with each Mailchimp field. Information provided by Mailchimp may be noted below fields.'
@@ -784,16 +800,11 @@ dd($mailchimpData);
             fn ($mergeField) => $mergeField['type'] !== 'address'
         );
 
-        // For adding column fillers, account for email config field already added
-        $fieldsAdded = 0;
-
         // Create configurations for each Mailchimp field
         foreach ($mailchimpMergeFields as $mergeField) {
             $fieldAssociationFieldset->add(
                 $this->createMergeFieldConfiguration($mergeField)
             );
-
-            $fieldsAdded++;
         }
 
         // Add Interest Groups as a field
@@ -801,17 +812,7 @@ dd($mailchimpData);
             $fieldAssociationFieldset->add(
                 $this->createInterestCategoryConfiguration($interestCategory)
             );
-
-            $fieldsAdded++;
         }
-
-        // Add spacing columns to fill remainder of row
-        $fieldAssociationFieldset = $this->addSpacingColumns(
-            $fieldAssociationFieldset,
-            $fieldsAdded % 3,
-            100 / 3
-        );
-
 
 
 
@@ -839,45 +840,6 @@ dd($mailchimpData);
         $inputfields->add($fieldAssociationFieldset);
 
 
-
-
-        // Subscriber Language
-        // $subscriberLanguageConfigName = $this->subscriberLanguageConfigName();
-
-        // $subscriberLangaugeConfig = $modules->get('InputfieldSelect');
-        // $subscriberLangaugeConfig->label = __('Include subscriber language');
-        // $subscriberLangaugeConfig->attr('name', $subscriberLanguageConfigName);
-        // $subscriberLangaugeConfig->attr('value', $this->$subscriberLanguageConfigName);
-        // $subscriberLangaugeConfig->collapsed = Inputfield::collapsedNever;
-        // $subscriberLangaugeConfig->themeBorder = 'hide';
-        // $subscriberLangaugeConfig->required = true;
-        // $subscriberLangaugeConfig->columnWidth = 100 / 3;
-        // $subscriberLangaugeConfig->addOptions([
-        //     'omit' => __('Do not include in submission'),
-        //     'pre_select' => __('Pre-select a language'),
-        //     'form_field' => __('Choose a field'),
-        // ]);
-
-        // $additionalOptionsFieldset->add($subscriberLangaugeConfig);
-
-        // // Subscriber Language - Pre-select
-        // $additionalOptionsFieldset->add(
-        //     $this->createSubmissionLanguagePreSelect()
-        // );
-
-        // $langFieldConfigName = $this->subscriberLanguageFormFieldConfigName();
-        // $langFieldConfigLabel = __('Subscriber language field field');
-
-        // $additionalOptionsFieldset->add(
-        //     $this->createFormFieldSelect($langFieldConfigName, $langFieldConfigLabel, [
-        //         'showIf' => "{$subscriberLanguageConfigName}=form_field",
-        //         'requiredIf' => "{$subscriberLanguageConfigName}=form_field",
-        //         'required' => true,
-        //         'notes' => __(
-        //             'Ensure this field provides a language code Mailchimp recognizes. Blank and incorrect language codes will be ignored. [Read more here](https://mailchimp.com/help/view-and-edit-contact-languages/)'
-        //         )
-        //     ])
-        // );
 
         /**
          * Date field formats
@@ -947,6 +909,8 @@ dd($mailchimpData);
             return null;
         }
 
+        $includeFieldConfig = $this->fieldConfig($tag)->mergeTagIncluded['name'];
+
         $fieldset = $this->wire()->modules->InputfieldFieldset;
         $fieldset->label = "{$name} - {$tag}";
         $fieldset->description = __('Address fields are limited to 45 characters.');
@@ -955,21 +919,28 @@ dd($mailchimpData);
         $fieldset->notes = $this->createInputfieldNotesFromMergeFieldOptions($options);
         $fieldset->themeColor = 'none';
 
-        $configNameBase = "{$this->mailchimp_audience_id}_address_merge_tag-{$tag}";
+        // showIf is not working for this fieldset unless manually prefixed with the module name
+        $fieldset->showIf = "FormBuilderProcessorMailchimp_{$includeFieldConfig}=1";
 
-        $fieldNames = (object) [
-            'addr1' => "{$configNameBase}-addr1",
-            'addr2' => "{$configNameBase}-addr2",
-            'city' => "{$configNameBase}-city",
-            'state' => "{$configNameBase}-state",
-            'zip' => "{$configNameBase}-zip",
-            'country' => "{$configNameBase}-country",
+        $fieldNames = [
+            'addr1' => null,
+            'addr2' => null,
+            'city' => null,
+            'state' => null,
+            'zip' => null,
+            'country' => null,
         ];
+
+        // Create config field names from $fieldNames
+        array_walk(
+            $fieldNames,
+            fn (&$v, $k) => $v = $this->fieldConfig($tag, $k)->addressMergeTag['name']
+        );
 
         $columnWidth = 100 / 3;
 
         // Street Address
-        $addr1Config = $this->createFormFieldSelect($fieldNames->addr1, __('Street Address'), [
+        $addr1Config = $this->createFormFieldSelect($fieldNames['addr1'], __('Street Address'), [
             'columnWidth' => $columnWidth,
             'notes' => __('Required by Mailchimp'),
             'required' => $required,
@@ -978,14 +949,14 @@ dd($mailchimpData);
         $fieldset->add($addr1Config);
 
         // Address Line 2
-        $addr2Config = $this->createFormFieldSelect($fieldNames->addr2, __('Address Line 2'), [
+        $addr2Config = $this->createFormFieldSelect($fieldNames['addr2'], __('Address Line 2'), [
             'columnWidth' => $columnWidth,
         ]);
 
         $fieldset->add($addr2Config);
 
         // City
-        $cityConfig = $this->createFormFieldSelect($fieldNames->city, __('City'), [
+        $cityConfig = $this->createFormFieldSelect($fieldNames['city'], __('City'), [
             'columnWidth' => $columnWidth,
             'notes' => __('Required by Mailchimp'),
             'required' => $required,
@@ -994,7 +965,7 @@ dd($mailchimpData);
         $fieldset->add($cityConfig);
 
         // State
-        $stateConfig = $this->createFormFieldSelect($fieldNames->state, __('State/Prov/Region'), [
+        $stateConfig = $this->createFormFieldSelect($fieldNames['state'], __('State/Prov/Region'), [
             'columnWidth' => $columnWidth,
             'notes' => __('Required by Mailchimp'),
             'required' => $required,
@@ -1003,7 +974,7 @@ dd($mailchimpData);
         $fieldset->add($stateConfig);
 
         // Postal/Zip
-        $zipConfig = $this->createFormFieldSelect($fieldNames->zip, __('Postal/Zip'), [
+        $zipConfig = $this->createFormFieldSelect($fieldNames['zip'], __('Postal/Zip'), [
             'columnWidth' => $columnWidth,
             'notes' => __('Required by Mailchimp'),
             'required' => $required,
@@ -1012,7 +983,7 @@ dd($mailchimpData);
         $fieldset->add($zipConfig);
 
         // Country
-        $countryConfig = $this->createFormFieldSelect($fieldNames->country, __('Country'), [
+        $countryConfig = $this->createFormFieldSelect($fieldNames['country'], __('Country'), [
             'columnWidth' => $columnWidth,
             'required' => $required,
         ]);
@@ -1039,23 +1010,6 @@ dd($mailchimpData);
     }
 
     /**
-     * Create a checkbox to include the email
-     * @return [type] [description]
-     */
-    private function createIncludeEmailFieldConfiguration(): InputfieldCheckbox
-    {
-        $checkbox = $this->wire('modules')->get('InputfieldCheckbox');
-        // $checkbox->attr('name', "{$this->mailchimp_audience_id}_include_email_field");
-        $checkbox->attr('value', '1');
-        $checkbox->attr('disabled', 'true');
-        $checkbox->required = true;
-        $checkbox->columnWidth = 100 / 3;
-        $checkbox->label = __('Email (required by Mailchimp');
-
-        return $checkbox;
-    }
-
-    /**
      * Create a checkbox to determine if a Mailchimp field should be included
      */
     private function createIncludeFieldConfiguration(array $mergeField): InputfieldCheckbox
@@ -1065,7 +1019,7 @@ dd($mailchimpData);
         [
             'name' => $configName,
             'value' => $configValue
-        ] = $this->fieldConfig($tag)->mergeTag;
+        ] = $this->fieldConfig($tag)->mergeTagIncluded;
 
         // Automatically include all required fields
         if ($required) {
@@ -1073,11 +1027,14 @@ dd($mailchimpData);
         }
 
         $checkbox = $this->wire('modules')->get('InputfieldCheckbox');
+        $checkbox->label = "{$name} - {$tag}";
         $checkbox->attr('name', $configName);
-        $checkbox->attr('value', $configValue);
-        $checkbox->attr('disabled', $required ? 'true' : 'false');
-        $checkbox->columnWidth = 100 / 3;
-        $checkbox->label = $name;
+        $checkbox->checked($configValue);
+        $checkbox->columnWidth = 25;
+        $checkbox->collapsed = Inputfield::collapsedNever;
+        $checkbox->themeBorder = 'hide';
+
+        $required &&  $checkbox->attr('disabled', 'true');
 
         return $checkbox;
     }
@@ -1088,20 +1045,20 @@ dd($mailchimpData);
     private function createIncludeInterestCategoryConfiguration(
         array $interestCategory
     ): InputfieldCheckbox {
-        ['category' => $mcCategory, 'interests' => $mcInterests] = $interestCategory;
-
-        ['id' => $categoryId, 'type' => $categoryType, 'title' => $categoryTitle] = $mcCategory;
+        ['id' => $categoryId, 'title' => $categoryTitle] = $interestCategory['category'];
 
         [
             'name' => $configName,
             'value' => $configValue
-        ] = $this->fieldConfig($categoryId)->fieldIncluded;
+        ] = $this->fieldConfig($categoryId)->mergeTagIncluded;
 
         $checkbox = $this->wire('modules')->get('InputfieldCheckbox');
+        $checkbox->label = "{$categoryTitle} - Interest list";
         $checkbox->attr('name', $configName);
-        $checkbox->attr('value', $configValue);
-        $checkbox->columnWidth = 100 / 3;
-        $checkbox->label = $categoryTitle;
+        $checkbox->checked($configValue);
+        $checkbox->columnWidth = 25;
+        $checkbox->collapsed = Inputfield::collapsedNever;
+        $checkbox->themeBorder = 'hide';
 
         return $checkbox;
     }
@@ -1118,17 +1075,27 @@ dd($mailchimpData);
             'options' => $options,
         ] = $mergeField;
 
-        $includeFieldConfig = $this->fieldConfig($tag)->mergeTag['name'];
-
+        $includedFieldName = $this->fieldConfig($tag)->mergeTagIncluded['name'];
         $fieldName = $this->fieldConfig($tag)->mergeTag['name'];
+
+        $visibility = [];
+
+        if ($required) {
+            $visibility = [
+                'showIf' => "{$includedFieldName}=1",
+                'requireIf' => "{$includedFieldName}=1",
+            ];
+        }
 
         return $this->createFormFieldSelect($fieldName, $name, [
             'required' => $required,
             'description' => __('Mailchimp merge tag:') . " {$tag}",
             'notes' => $this->createInputfieldNotesFromMergeFieldOptions($options),
-            'showIf' => "{$includeFieldConfig}=1",
-            'requireIf' => "{$includeFieldConfig}=1",
+            'showIf' => "{$includedFieldName}=1",
+            'requireIf' => "{$includedFieldName}=1",
+            'required' => true,
             'themeInputWidth' => 'l',
+            ...$visibility,
         ]);
     }
 
@@ -1150,11 +1117,15 @@ dd($mailchimpData);
         ]);
 
         $fieldName = $this->fieldConfig($categoryId)->interestCategory['name'];
+        $includedFieldName = $this->fieldConfig($categoryId)->mergeTagIncluded['name'];
 
         return $this->createFormFieldSelect($fieldName, $categoryTitle, [
             'description' => __('Interest list'),
             'notes' => $notes,
             'themeInputWidth' => 'l',
+            'showIf' => "{$includedFieldName}=1",
+            'requireIf' => "{$includedFieldName}=1",
+            'required' => true,
         ]);
     }
 
@@ -1215,27 +1186,102 @@ dd($mailchimpData);
     }
 
     /**
-     * Add spacing columns to fill remaining space left after fields in fieldset
+     * Removes empty values that have been namespaced to the current Mailchimp Audience ID
+     * Keeps the config from getting gunked up with unused or legacy config keys/values
      */
-    private function addSpacingColumns(
-        InputfieldFieldset $fieldset,
-        int $count,
-        int|float $width
-    ): InputfieldFieldset {
-        while ($count >= 0) {
-            $filler = $this->modules->InputfieldFieldset;
-            $filler->attr('style', $filler->attr('style') . ' visibility: hidden !important;');
-            $filler->wrapAttr('style', $filler->attr('style') . ' visibility: hidden !important;');
-            $filler->columnWidth = $width;
-            $filler->themeBorder = 'hide';
-
-            $fieldset->add($filler);
-
-            $count--;
-        }
-
-        return $fieldset;
+    private function purgeAudienceConfigs(
+        array $audiences,
+        array $mergeFields,
+        array $audienceTags,
+        array $interestCategories,
+    ): void {
+        $config = $this->data;
+// dd($this->getConfiguredMergeFields());
+//         dd($audiences, $mergeFields, $audienceTags, $interestCategories);
     }
+
+    /**
+     * Configured data retrieval
+     */
+
+    /**
+     * Pull all merge tags that have been configured with associated field names
+     * @return array<string, string>
+     */
+    private function getConfiguredMergeFields(): array
+    {
+        $configPrefix = $this->fieldConfig()->mergeTag['prefix'];
+
+        // Pull merge tag/form field configs
+        $mergeTags =  array_filter(
+            $this->data,
+            fn ($fieldName, $key) => str_starts_with($key, $configPrefix) && !empty($fieldName),
+            ARRAY_FILTER_USE_BOTH
+        );
+
+        // ['d221b5a07a_merge_tag__TAGNAME']
+        $keys = array_keys($mergeTags);
+
+        // ['form_field']
+        $values = array_values($mergeTags);
+
+        // ['TAGNAME']
+        $keys = array_map(fn ($key) => ltrim($key, $configPrefix), $keys);
+
+        return array_combine($keys, $values);
+    }
+
+    /**
+     * Pull all address merge tags configured with an associated field name
+     * @return array<array>
+     */
+    private function getConfiguredAddressFields(): array
+    {
+        $configPrefix = $this->fieldConfig()->addressMergeTag['prefix'];
+
+        // Get all merge tag configs from stored form config data that have values
+        $mergeTagConfigs = array_filter(
+            $this->data,
+            fn ($value, $name) => str_starts_with($name, $configPrefix) && !empty($value),
+            ARRAY_FILTER_USE_BOTH
+        );
+
+        // Flip so that configured field names are keys and configuration keys are values
+        $mergeTagConfigs = array_flip($mergeTagConfigs);
+
+        // From 'd221b5a07a_address_merge_tag-ADDRESS-addr1'
+        // To [ADDRESS', 'addr1', 'field_name']
+        array_walk($mergeTagConfigs, function(&$configKey, $fieldName) {
+            [, $mergeTag, $addressSubfield] = explode('-', $configKey);
+
+            $configKey = [$mergeTag, $addressSubfield, $fieldName];
+        });
+
+        $configArrays = array_values($mergeTagConfigs);
+
+        // [
+        //     'ADDRESS' => [
+        //         [
+        //             'mailchimpSubfield' => 'addr1',
+        //             'formField' => 'field_name'
+        //         ]
+        //     ],
+        // ]
+        return array_reduce($configArrays, function($configs, $configArray) {
+            [$mergeTag, $addressSubfield, $fieldName] = $configArray;
+
+            $configs[$mergeTag] ??= [];
+
+            $configs[$mergeTag][] = [
+                'mailchimpSubfield' => $addressSubfield,
+                'formField' => $fieldName,
+            ];
+
+            return $configs;
+        }, []);
+    }
+
+
 
     /**
      * Creates select inputfield to preset a language for subscriber submissions
