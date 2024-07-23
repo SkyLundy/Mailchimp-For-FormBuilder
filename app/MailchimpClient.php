@@ -42,6 +42,8 @@ class MailchimpClient
         'interestCategories' => [],
     ];
 
+    private array $audienceMembers = [];
+
     private function __construct(
         public MailChimp $mailchimp
     ) {}
@@ -69,7 +71,9 @@ class MailchimpClient
      */
     public function subscribeOrUpdate(array $subscriberData, $audienceId): mixed
     {
-        return $this->mailchimp->put("lists/{$audienceId}/members", $subscriberData);
+        $emailHash = hash('MD5', $subscriberData['email_address']);
+
+        return $this->mailchimp->put("lists/{$audienceId}/members/{$emailHash}", $subscriberData);
     }
 
     /**
@@ -82,7 +86,66 @@ class MailchimpClient
             return $this->audiences;
         }
 
-        return $this->audiences = $this->mailchimp->get('lists');
+        $audiences = $this->mailchimp->get('lists');
+
+        if (!$audiences) {
+            return [];
+        }
+
+        return $this->audiences = $audiences;
+    }
+
+    /**
+     * Gets details for a specific audience (list)
+     * @param  string $audienceId Mailchimp Audience ID
+     */
+    public function getAudience(string $audienceId): array
+    {
+        $audience = $this->mailchimp->get("lists/{$audienceId}");
+
+        if (!$audience) {
+            return [];
+        }
+
+        return $audience;
+    }
+
+    /**
+     * Get all members of a given audience
+     * @param  string $audienceId Mailchimp Audience ID
+     */
+    public function getAudienceMembers(string $audienceId): array
+    {
+        if ($this->audienceMembers) {
+            return $this->audienceMembers;
+        }
+
+        $audienceMembers = $this->mailchimp->get("lists/{$audienceId}/members");
+
+        if (!$audienceMembers) {
+            return [];
+        }
+
+        return $this->audienceMembers = $audienceMembers;
+    }
+
+    public function createFakeSubscriber(string $audienceId): array|bool
+    {
+        $mergeFields = $this->getMergeFields($audienceId);
+
+        return FakeSubscriber::generate($mergeFields);
+    }
+
+    /**
+     * Delete a specific audience member
+     * @param  string $audienceId     ID of audience
+     * @param  string $subscriberHash An MD5 hash of the email address in lowercase
+     */
+    public function deleteAudienceMember(string $audienceId, string $subscriberHash): bool|array
+    {
+        return $this->mailchimp->delete(
+            "/lists/{$audienceId}/members/{$subscriberHash}/actions/delete-permanent"
+        );
     }
 
     /**

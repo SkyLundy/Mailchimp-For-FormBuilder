@@ -17,6 +17,7 @@ class FormBuilderProcessorMailchimpConfig extends ModuleConfig
         return [
             'mailchimp_api_key' => null,
             'mailchimp_api_ready' => false,
+            'mailchimp_purge_orphaned_config' => 'never',
         ];
     }
 
@@ -72,7 +73,7 @@ class FormBuilderProcessorMailchimpConfig extends ModuleConfig
 
                 $mailchimpClient->getAudiences();
 
-                $headers = $mailchimpClient->mailChimp->getLastResponse()['headers'];
+                $headers = $mailchimpClient->mailchimp->getLastResponse()['headers'];
             } catch (Exception $e) {
                 $this->wire->error($e->getMessage());
 
