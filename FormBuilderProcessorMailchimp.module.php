@@ -37,12 +37,12 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         $this->processingConfig = $this->getFormProcessingConfigs();
 
         // Load stored Mailchimp data
-        $this->mailchimpData = $this->loadMailchimpDataFromConfig();
+        $this->mailchimpData = $this->getMailchimpApiData();
 
         // Form submission Data
         $postData = $this->input->post->getArray();
 
-        $this->logIfDebugActive('Form submitted', $postData);
+        $this->debugEvent('Form submitted', $postData);
 
         // Check if submission qualifies for Mailchimp processing
         if (!$this->isMailchimpSubmittable($postData)) {
@@ -51,7 +51,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
 
         $subscriberData = $this->parseFormSubmission($postData);
 
-        $this->logIfDebugActive('Form submission parsed for Mailchimp', $subscriberData);
+        $this->debugEvent('Form submission parsed for Mailchimp', $subscriberData);
 
         if (!$subscriberData) {
             return;
@@ -93,7 +93,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         if ($responseStatus !== 200 && !$this->wire()->config->debug) {
             $submissionEmail = $subscriberData[$this->emailAddressField] ?? 'Not present';
 
-            $this->logMailchimpApiError(
+            $this->logMailchimpSubmissionFailure(
                 $responseBody->title,
                 "Status: {$responseBody->status}",
                 "Detail: {$responseBody->detail}",
@@ -105,7 +105,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         }
 
         // Debug logs all responses
-        $this->logIfDebugActive('Mailchimp response', $lastResponse['body']);
+        $this->debugEvent('Mailchimp response', $lastResponse['body']);
     }
 
     /**
@@ -160,7 +160,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
             ...$this->getSubmissionAddressMergeFields($formData),
         ]);
 
-        $output = array_filter([
+        return array_filter([
             'email_address' => mb_strtolower($formData[$processingConfig->emailAddressField], 'UTF-8'),
             'merge_fields' => $mergeFields,
             'interests' => $this->getSubmissionInterestCategories($formData),
@@ -169,10 +169,6 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
             'ip_signup' => $processingConfig->collectIp ? wire('session')->getIP() : null,
             ...$this->getSubscriberStatus(),
         ]);
-
-        // dd($output);
-
-        return $output;
     }
 
     /**
@@ -347,7 +343,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         }
 
         try {
-            $this->mailchimpData = $this->getMailchimpApiData();
+            $this->mailchimpData = $this->getMailchimpApiData(useLocal: false);
         } catch (Exception $e) {
             $wire->error("Mailchimp error: {$e->getMessage()}");
 
@@ -441,8 +437,14 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         $submissionConfigurationFieldset->add($audienceSelect);
 
         /**
+         * New Audience Tag Capture
+         * If there are new tags created on this request, parse, save, and add to field
+         */
+
+        /**
          * Audience Tags
          */
+        $tagSelectFieldValues = $this->getAudienceTagsFieldValues();
 
         $audienceTagsFieldName = "{$this->mailchimp_audience_id}__audience_tags";
 
@@ -452,18 +454,17 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         $tagsSelect->description = __(
             'Optional Mailchimp tags assigned to submissions from this form'
         );
-        $tagsSelect->attr('value', $this->{$audienceTagsFieldName});
+        $tagsSelect->attr('value', $tagSelectFieldValues);
+        // $tagsSelect->attr('value', $this->{$audienceTagsFieldName});
         $tagsSelect->themeBorder = 'hide';
         $tagsSelect->collapsed = Inputfield::collapsedNever;
         $tagsSelect->showIf = "mailchimp_audience_id!=''";
         $tagsSelect->sortable = false;
         $tagsSelect->columnWidth = 100 / 3;
 
-        foreach ($this->mailchimpData->audienceTags as $audienceTag) {
-            $tagsSelect->addOption($audienceTag->name, $audienceTag->name);
+        foreach ($this->createAudienceTagOptions() as $tagName) {
+            $tagsSelect->addOption($tagName, $tagName);
         }
-
-        $tagsSelect->addOption('X', 'X');
 
         $submissionConfigurationFieldset->add($tagsSelect);
 
@@ -506,6 +507,23 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         );
 
         $submissionConfigurationFieldset->add($optInCheckboxSelect);
+
+        /**
+         * New Tag Creation
+         */
+        $createAudienceTags = $modules->get('InputfieldText');
+        $createAudienceTags->attr('name', "{$this->mailchimp_audience_id}__new_audience_tags");
+        // $createAudienceTags->attr('value', "");
+        $createAudienceTags->label = __('Add new Audience Tags');
+        $createAudienceTags->description = __('Add one or more new Audience Tags separated by commas');
+        $createAudienceTags->placeholder = __('Tag 1, Tag 2, Tag 3');
+        $createAudienceTags->collapsed = Inputfield::collapsedYes;
+        $createAudienceTags->themeBorder = 'hide';
+        $createAudienceTags->notes = __(
+            'New tags are created here then added in Mailchimp when the first subscription is successfully submitted'
+        );
+
+        $submissionConfigurationFieldset->add($createAudienceTags);
 
         /**
          * Mark Subscribers as VIP
@@ -744,6 +762,53 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
     }
 
     /**
+     * Creates array of arrays containing Audience Tag options
+     * @return array<array>
+     */
+    private function createAudienceTagOptions(): array
+    {
+        $mailchimpTags = array_map(fn ($tag) => $tag->name, $this->mailchimpData->audienceTags);
+        $localTags = $this->data["{$this->mailchimp_audience_id}__audience_tags"];
+
+        $allTags = array_unique([...$mailchimpTags, ...$localTags]);
+
+        sort($allTags);
+
+        return $allTags;
+    }
+
+    /**
+     * Looks for new Audience Tags submitted in config.
+     * Adds new tags to inputfield and config field, saves
+     * Returns all locally configured tags that may or may not yet exist in Mailchimp
+     * Tags are created in Mailchimp on first subscription submission containing them
+     */
+    private function getAudienceTagsFieldValues(): array
+    {
+        $audienceId = $this->mailchimp_audience_id;
+
+        $newTags = $this->data["{$audienceId}__new_audience_tags"];
+        $configuredAudienceTags = $this->data["{$audienceId}__audience_tags"];
+
+        if (!$newTags) {
+            return $configuredAudienceTags;
+        }
+
+        // Check for new audience tags
+        $newTags = explode(',', $newTags);
+        $newTags = array_map('trim', $newTags);
+
+
+        $configuredAudienceTags = [...$configuredAudienceTags, ...$newTags];
+
+        $this->saveConfigValue("{$audienceId}__audience_tags", $configuredAudienceTags);
+        $this->data["{$audienceId}__audience_tags"] = $configuredAudienceTags;
+
+        return $configuredAudienceTags;
+    }
+
+
+    /**
      * Create sets of fields to configure addresses
      */
     private function createAddressMergeFieldsConfiguration(stdClass $mergeField): ?InputfieldFieldset
@@ -756,7 +821,8 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         $includeFieldConfig = "{$audienceId}__submit_to_mailchimp__{$mergeField->merge_id}";
 
         // showIf is not working for this fieldset unless manually prefixed with the module name
-        $showFieldIf = "FormBuilderProcessorMailchimp_{$includeFieldConfig}=1";
+        $moduleClassName = $this->wire()->modules->get($this)->className;
+        $showFieldIf = "{$moduleClassName}_{$includeFieldConfig}=1";
 
         $fieldset = $this->wire()->modules->InputfieldFieldset;
         $fieldset->label = "{$mergeField->name} - {$mergeField->tag}";
@@ -990,7 +1056,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
     {
         $audienceId = $this->data['mailchimp_audience_id'];
         $audienceConfigs = $this->getAudienceConfigs();
-        $this->mailchimpData = $this->mailchimpData ?? $this->loadMailchimpDataFromConfig();
+        $this->mailchimpData = $this->mailchimpData ?? $this->getMailchimpApiData();
 
         return (object) [
             'audienceId' => $audienceId,
@@ -1020,7 +1086,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
      */
     private function getDateConversionFormats(): array
     {
-        $mailchimpData = $this->mailchimpData ?? $this->loadMailchimpDataFromConfig();
+        $mailchimpData = $this->mailchimpData ?? $this->getMailchimpApiData();
 
         return array_reduce($mailchimpData->mergeFields, function($formats, $mergeField) {
             if (!property_exists($mergeField->options, 'date_format')) {
@@ -1128,7 +1194,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
 
     private function getinterestCategoryById(string $id): ?stdClass
     {
-        $mailchimpData = $this->mailchimpData ?? $this->loadMailchimpDataFromConfig();
+        $mailchimpData = $this->mailchimpData ?? $this->getMailchimpApiData();
         $interestCategories = $mailchimpData->interestCategories;
 
         return array_reduce($interestCategories, function($match, $interestCategory) use ($id) {
@@ -1142,7 +1208,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
      */
     private function getMergeFieldById(string|int $mergeId): ?stdClass
     {
-        $mailchimpData = $this->mailchimpData ?? $this->loadMailchimpDataFromConfig();
+        $mailchimpData = $this->mailchimpData ?? $this->getMailchimpApiData();
         $id = (int) $mergeId;
 
         return array_reduce(
@@ -1193,9 +1259,14 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         return $removeEmpty ? array_filter($configs) : $configs;
     }
 
+    /**
+     * Gets a value from the audience object of a given ID
+     * @param  string $audienceId Mailchimp Audience ID
+     * @param  string $key        Object Key
+     */
     private function getMailchimpAudienceValue(string $audienceId, string $key): mixed
     {
-        $audiences = ($this->mailchimpData ?? $this->loadMailchimpDataFromConfig())->audiences;
+        $audiences = ($this->mailchimpData ?? $this->getMailchimpApiData())->audiences;
 
         return array_reduce($audiences, function($match, $audience) use ($audienceId, $key) {
             if ($match !== null) {
@@ -1206,21 +1277,29 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         }, null);
     }
 
-    /**
-     * Loads persisted Mailchimp API data from processor config for current configured Audience into
-     * $this->mailchimpData
-     */
-    private function loadMailchimpDataFromConfig(): stdClass
-    {
-        return json_decode($this->data['mailchimp_data']);
-    }
 
     /**
      * Retrieves Mailchimp data from API, persists in processor config
+     * @param bool $useLocal Load from local configuration, false to pull fresh data from API
      * @throws Exception
      */
-    private function getMailchimpApiData(): stdClass
+    private function getMailchimpApiData(bool $useLocal = true): stdClass
     {
+        $localData = json_decode($this->data['mailchimp_data']);
+
+        if ($useLocal && $localData) {
+            return $localData;
+        }
+
+        $mailchimpData = $this->mailchimpData ?? $this->getMailchimpApiData();
+        $lastRetrieved = new DateTimeImmutable($mailchimpData->lastRetrieved->date);
+        $now = new DateTimeImmutable();
+
+        // Use stored data as cache in 3 minute intervals, helps speed up form configuration
+        // if ($now->diff($lastRetrieved)->i < 15) {
+        //     return $mailchimpData;
+        // }
+
         try {
             $mailchimpClient = MailchimpClient::init($this->mailchimp_api_key);
 
@@ -1280,7 +1359,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
      * Logging
      */
 
-    private function logMailchimpSubmissionFailur(...$messages): void
+    private function logMailchimpSubmissionFailure(...$messages): void
     {
         $message = implode(', ', $messages);
 
@@ -1302,7 +1381,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         wire('log')->save(self::LOG_NAME, "Mailchimp API Error: {$message}");
     }
 
-    private function logIfDebugActive(string $event, array|object|string $body): void
+    private function debugEvent(string $event, array|object|string $body): void
     {
         if (!$this->wire()->config->debug) {
             return;
