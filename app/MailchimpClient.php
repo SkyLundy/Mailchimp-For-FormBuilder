@@ -71,7 +71,8 @@ class MailchimpClient
      */
     public function subscribeOrUpdate(array $subscriberData, $audienceId): mixed
     {
-        $emailHash = hash('MD5', $subscriberData['email_address']);
+        $lowerEmail = mb_strtolower($subscriberData['email_address'], 'UTF-8');
+        $emailHash = hash('MD5', $lowerEmail);
 
         return $this->mailchimp->put("lists/{$audienceId}/members/{$emailHash}", $subscriberData);
     }
@@ -129,11 +130,22 @@ class MailchimpClient
         return $this->audienceMembers = $audienceMembers;
     }
 
-    public function createFakeSubscriber(string $audienceId): array|bool
+    /**
+     * Get mock subscribe action response data
+     * - Creates a fake user
+     * - Creates a new subscriber using fake user data in Mailchimp
+     * - Deletes the new fake user
+     * - Returns response body
+     * This is useful to get data points, such as GDPR/marketing permissions that are not available
+     * via any other method
+     * @param  string $audienceId Audience to retrieve mock data for
+     */
+    public function mockSubscribe(string $audienceId): array|bool
     {
         $mergeFields = $this->getMergeFields($audienceId);
+        $subscriberData =  FakeSubscriber::generate($mergeFields);
 
-        return FakeSubscriber::generate($mergeFields);
+        $response = $this->subscribe($subscriberData, $audienceId);
     }
 
     /**
