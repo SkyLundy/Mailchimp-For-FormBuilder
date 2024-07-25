@@ -1,7 +1,7 @@
 <?php namespace ProcessWire;
 
 $info = [
-    'title' => 'Mailchimp subscribe action for FormBuilder',
+    'title' => 'Mailchimp for FormBuilder',
     'version' => 001,
     'summary' => 'Add subscribers to Mailchimp Audiences',
     'icon' => 'envelope-square',

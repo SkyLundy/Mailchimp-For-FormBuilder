@@ -8,6 +8,7 @@ wire('classLoader')->addNamespace('FormBuilderProcessorMailchimp\App', __DIR__ .
 
 use DateTimeImmutable;
 use Exception;
+use FormBuilderProcessorMailchimp\App\DataMaintenance;
 use FormBuilderProcessorMailchimp\App\MailchimpClient;
 use stdClass;
 
@@ -33,6 +34,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         if (!$this->mailchimp_audience_id || !$this->mailchimp_api_ready) {
             return;
         }
+
         // Set parsed configs for processing this form submission
         $this->processingConfig = $this->getFormProcessingConfigs();
 
@@ -201,7 +203,14 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
             default => $type,
         };
 
-        return in_array($emailType, ['html', 'text']) ? $emailType : 'html';
+        $typeIsValid = in_array($emailType, ['html', 'text']);
+
+        !$typeIsValid && $this->logFormSubmissionError(
+            "Invalid email type: {$emailType}",
+            "Default value 'html' used"
+        );
+
+        return $typeIsValid ? $emailType : 'html';
     }
 
     /**
@@ -358,42 +367,81 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         $usageNotes->collapsed = Inputfield::collapsedYes;
         $usageNotes->themeOffset = 'm';
         $usageNotes->value = <<<EOD
-        <p><strong>Mailchimp Audience</strong></p>
-        <p>The Audience (aka List) is the destination for the entries sent from this form.</p>
+        <h3 style="margin-top: 1.5rem;">Mailchimp Audience</h3>
+        <p>The Audience (aka List) is the destination for subscriptions from this form.</p>
 
-        <p><strong>Audience Tags</strong></p>
-        <p>Audience tags are configured in Mailchimp and can assist with segmenting incoming entries. Choose one or more tags to further organize information received by Mailchimp from FormBuilder forms.</p>
+        <h3 style="margin-top: 1.5rem;">Subscription Action & Subscriber Status</h3>
 
-        <p><strong>Opt-in Checkbox Field</strong></p>
-        <p>Specify a checkbox to let users opt-in to email communications, optional.</p>
+        <p>You may choose the action to be taken when a form is submitted to mailchimp.</p>
 
-        <p><strong>Mailchimp Fields</strong></p>
+        <ul>
+          <li>
+            <strong>Add new subscribers:</strong> Only add new subscribers that do not exist in Mailchimp.
+          </li>
+          <li>
+            <strong>Add new subscribers, update existing:</strong> Add new subscribers and update contacts that already exist with the information entered when a matching email address is found.
+          </li>
+          <li>
+            <strong>Unsubscribe: </strong> Unsubscribes a contact if found in Mailchimp
+          </li>
+        </ul>
+
+        <p><strong>Subscriber Status</strong></p>
+
+        <ul>
+          <li>
+            <strong>Subscribed:</strong> Contacts will automatically be created in Mailchimp.
+          </li>
+          <li>
+            <strong>Pending (double opt-in):</strong> Mailchimp will automatically send a confirmation email where the individual must confirm their subscription before being added as a contact in Mailchimp. Form submissions with "Pending" will not be visible in Mailchimp until their subscription is confirmed.
+          </li>
+        </ul>
+
+        <h3 style="margin-top: 1.5rem;">Email Type</h3>
+
+        <p>Choose what format the email the subscriber will be sent in, or choose a field to let them choose when submitting the form.</p>
+
+        <h3 style="margin-top: 1.5rem;">VIP Subscriptions & Subscriber IP</h3>
+
+        <p>You may optionally choose to mark subscribers from a form as "VIP". Mailchimp accounts only allow for 5,000 VIP contacts in Mailchimp. Use discretion with this setting as how form data will be handled after the 5,000 VIP limit has been reached is not documented.</p>
+
+        <p>You can collect the IP address of the individual submitting the form and send it to Mailchimp with their subscription data.</p>
+
+        <h3 style="margin-top: 1.5rem;">Contact Organization (Audience Tags)</h3>
+        <p>Audience Tags assist with organizing contacts in Mailchimp. Choose one or more tags to further organize information received by Mailchimp from FormBuilder forms.</p>
+
+        <p>Audience Tags can be selected from those that are created/present in Mailchimp and new tags can be created while editing forms. When a new Audience Tag is created here, they will be created in Mailchimp when the first successful subscription is accepted. Tags can be created for one form and then selected for any other FormBuilder form as well.</p>
+
+        <p>NOTE: When tags are removed or renamed in Mailchimp, forms using those tags must be updated here or forms will continue sending subscriptions using the old tags.</p>
+
+        <h3 style="margin-top: 1.5rem;">Mailchimp Fields</h3>
         <p>Select Mailchimp fields to submit data to then configure the form fields to associate with that Mailchimp field in the following section. An email field is required at minimum by Mailchimp and is added automatically.</p>
 
-        <p><strong>Form Field Associations</strong></p>
+        <h3 style="margin-top: 1.5rem;">Form Field Associations</h3>
         <p>Choose a form field to associate with the Mailchimp field that has been added. Notes may be present below fields which may provide additional information that can assist configuring the fields for this form. These may include formatting, expected/allowed values, and maximum length of the value for that field.</p>
 
-        <p>It is not possible to process image/file upload fields</p>
+        <p>NOTE: It is not possible to process image/file upload fields</p>
 
-        <p><strong>Changes In Mailchimp</strong></p>
+        <h3 style="margin-top: 1.5rem;">Changes In Mailchimp</h3>
         <p>Changes made in Mailchimp may affect the configuration and submission for this form. If in Mailchimp a Field, Audience, or Audience Tag is deleted, they will not be available for configuration here. Forms configured to submit to an Audence that has been removed from Mailchimp will no longer send data. The same applies to Fields and Audience Tags. Ensure that your forms stay up to date with Mailchimp for best results.</p>
 
         <p>Changes to names of Fields, Audiences, or Audience Tags in Mailchimp will not affect submissions of forms configured to use them.</p>
 
-        <p><strong>Test Your Form Configuration</strong></p>
+
+        <h3 style="margin-top: 1.5rem;">Opt-in Checkbox Field</h3>
+        <p>Specify a checkbox to let users opt-in to email communications, optional. <strong>If a checkbox field is configured and that field is not present in the form submission or the value is empty, the submission will not be sent to Mailchimp.</strong></p>
+
+        <h3 style="margin-top: 1.5rem;">Test Your Form Configuration</h3>
         <p>Always test your Mailchimp integrations. Ensure that the fields are submitting the data in the proper formatting expected by Mailchimp and that required fields are configured properly.</p>
         EOD;
 
         $inputfields->add($usageNotes);
-
+// dd($this->data);
         /**
          * Submission configuration
          */
         $submissionConfigurationFieldset = $modules->get('InputfieldFieldset');
         $submissionConfigurationFieldset->label = __('Mailchimp Integration');
-        $submissionConfigurationFieldset->description = __(
-            'Confguration details for subscription submissions'
-        );
         $submissionConfigurationFieldset->themeOffset = 'm';
         $submissionConfigurationFieldset->collapsed = Inputfield::collapsedNever;
 
@@ -407,13 +455,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         $audienceSelect->themeBorder = 'hide';
         $audienceSelect->required = true;
         $audienceSelect->themeInputWidth = 'l';
-        $audienceSelect->columnWidth = 100 / 3;
-
-        if ($this->mailchimpData->audiences) {
-            foreach ($this->mailchimpData->audiences as $audience) {
-                $audienceSelect->addOption($audience->id, $audience->name);
-            }
-        }
+        // $audienceSelect->columnWidth = 100 / 3;
 
         if (!$this->mailchimpData->audiences) {
             $audienceSelect->required = false;
@@ -421,6 +463,16 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
             $audienceSelect->notes = __(
                 'At least one Audience must be created in Mailchimp to receive submissions'
             );
+
+            $submissionConfigurationFieldset->add($audienceSelect);
+
+            return $inputfields;
+        }
+
+        if ($this->mailchimpData->audiences) {
+            foreach ($this->mailchimpData->audiences as $audience) {
+                $audienceSelect->addOption($audience->id, $audience->name);
+            }
         }
 
         // No audience selected
@@ -431,135 +483,12 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
 
             $submissionConfigurationFieldset->add($audienceSelect);
 
+            $inputfields->add($submissionConfigurationFieldset);
+
             return $inputfields;
         }
 
         $submissionConfigurationFieldset->add($audienceSelect);
-
-        /**
-         * New Audience Tag Capture
-         * If there are new tags created on this request, parse, save, and add to field
-         */
-
-        /**
-         * Audience Tags
-         */
-        $tagSelectFieldValues = $this->getAudienceTagsFieldValues();
-
-        $audienceTagsFieldName = "{$this->mailchimp_audience_id}__audience_tags";
-
-        $tagsSelect = $modules->get('InputfieldAsmSelect');
-        $tagsSelect->attr('name', $audienceTagsFieldName);
-        $tagsSelect->label = __('Audience Tags');
-        $tagsSelect->description = __(
-            'Optional Mailchimp tags assigned to submissions from this form'
-        );
-        $tagsSelect->attr('value', $tagSelectFieldValues);
-        // $tagsSelect->attr('value', $this->{$audienceTagsFieldName});
-        $tagsSelect->themeBorder = 'hide';
-        $tagsSelect->collapsed = Inputfield::collapsedNever;
-        $tagsSelect->showIf = "mailchimp_audience_id!=''";
-        $tagsSelect->sortable = false;
-        $tagsSelect->columnWidth = 100 / 3;
-
-        foreach ($this->createAudienceTagOptions() as $tagName) {
-            $tagsSelect->addOption($tagName, $tagName);
-        }
-
-        $submissionConfigurationFieldset->add($tagsSelect);
-
-        /**
-         * Opt-In Checkbox
-         */
-
-        $optInCheckboxFieldName = "{$this->mailchimp_audience_id}__opt_in_checkbox_field";
-
-        $optInCheckboxSelect = $modules->get('InputfieldSelect');
-        $optInCheckboxSelect->attr('name', $optInCheckboxFieldName);
-        $optInCheckboxSelect->label = __('Opt-In Checkbox');
-        $optInCheckboxSelect->description = __('Optional checkbox required for submission to Mailchimp');
-        $optInCheckboxSelect->attr('value', $this->{$optInCheckboxFieldName});
-        $optInCheckboxSelect->collapsed = Inputfield::collapsedNever;
-        $optInCheckboxSelect->themeBorder = 'hide';
-        $optInCheckboxSelect->showIf = "mailchimp_audience_id!=''";
-        $optInCheckboxSelect->themeInputWidth = 'l';
-        $optInCheckboxSelect->columnWidth = 100 / 3;
-
-        $checkboxFields = array_filter(
-            $this->fbForm->children,
-            fn ($field) => $field->type === 'Checkbox',
-        );
-
-        if ($checkboxFields) {
-            $optInCheckboxSelect->notes = __(
-                "Checked value must be one of: `true`, `'true'`, `'1'`, `1`, `'on'`, or `'yes'`"
-            );
-        }
-
-        if (!$checkboxFields) {
-            $optInCheckboxSelect->notes = __('Add one or more checkbox fields to choose');
-        }
-
-        $optInCheckboxSelect = array_reduce(
-            $checkboxFields,
-            fn ($inputfield, $field) => $inputfield->addOption($field->name, $field->label),
-            $optInCheckboxSelect
-        );
-
-        $submissionConfigurationFieldset->add($optInCheckboxSelect);
-
-        /**
-         * New Tag Creation
-         */
-        $createAudienceTags = $modules->get('InputfieldText');
-        $createAudienceTags->attr('name', "{$this->mailchimp_audience_id}__new_audience_tags");
-        // $createAudienceTags->attr('value', "");
-        $createAudienceTags->label = __('Add new Audience Tags');
-        $createAudienceTags->description = __('Add one or more new Audience Tags separated by commas');
-        $createAudienceTags->placeholder = __('Tag 1, Tag 2, Tag 3');
-        $createAudienceTags->collapsed = Inputfield::collapsedYes;
-        $createAudienceTags->themeBorder = 'hide';
-        $createAudienceTags->notes = __(
-            'New tags are created here then added in Mailchimp when the first subscription is successfully submitted'
-        );
-
-        $submissionConfigurationFieldset->add($createAudienceTags);
-
-        /**
-         * Mark Subscribers as VIP
-         */
-        $markVipFieldName = "{$this->mailchimp_audience_id}__mark_vip";
-
-        $markVip = $modules->get('InputfieldCheckbox');
-        $markVip->label = __('VIP Subscriptions');
-        $markVip->label2 = __('Mark subscribers as VIP');
-        $markVip->notes = __(
-            '5,000 VIP subscriber limit per account. Overage may cause unexpected behavior. [Read more](https://mailchimp.com/help/designate-and-send-to-vip-contacts/).'
-        );
-        $markVip->collapsed = Inputfield::collapsedNever;
-        $markVip->attr('name', $markVipFieldName);
-        $markVip->checked($this->{$markVipFieldName});
-        $markVip->themeBorder = 'hide';
-        $markVip->columnWidth = 50;
-        $markVip->showIf = "mailchimp_audience_id!=''";
-
-        $submissionConfigurationFieldset->add($markVip);
-
-        /**
-         * Collect Submitters IP Address
-         */
-        $collectIpFieldName = "{$this->mailchimp_audience_id}__collect_ip";
-
-        $collectIp = $modules->get('InputfieldCheckbox');
-        $collectIp->label = __('Subscriber IP Address');
-        $collectIp->label2 = __('Capture IP address');
-        $collectIp->collapsed = Inputfield::collapsedNever;
-        $collectIp->attr('name', $collectIpFieldName);
-        $collectIp->checked($this->{$collectIpFieldName});
-        $collectIp->themeBorder = 'hide';
-        $collectIp->columnWidth = 50;
-
-        $submissionConfigurationFieldset->add($collectIp);
 
         /**
          * Subscription action Add or Add/Update
@@ -672,7 +601,103 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
 
         $submissionConfigurationFieldset->add($emailTypeField);
 
+
+        /**
+         * Mark Subscribers as VIP
+         */
+        $markVipFieldName = "{$this->mailchimp_audience_id}__mark_vip";
+
+        $markVip = $modules->get('InputfieldCheckbox');
+        $markVip->label = __('VIP Subscriptions');
+        $markVip->label2 = __('Mark subscribers as VIP');
+        $markVip->notes = __(
+            '5,000 VIP subscriber limit per account. Overage may cause unexpected behavior. [Read more](https://mailchimp.com/help/designate-and-send-to-vip-contacts/).'
+        );
+        $markVip->collapsed = Inputfield::collapsedNever;
+        $markVip->attr('name', $markVipFieldName);
+        $markVip->checked($this->{$markVipFieldName});
+        $markVip->themeBorder = 'hide';
+        $markVip->columnWidth = 50;
+        $markVip->showIf = "mailchimp_audience_id!=''";
+
+        $submissionConfigurationFieldset->add($markVip);
+
+        /**
+         * Collect Submitters IP Address
+         */
+        $collectIpFieldName = "{$this->mailchimp_audience_id}__collect_ip";
+
+        $collectIp = $modules->get('InputfieldCheckbox');
+        $collectIp->label = __('Subscriber IP Address');
+        $collectIp->label2 = __('Capture IP address');
+        $collectIp->collapsed = Inputfield::collapsedNever;
+        $collectIp->attr('name', $collectIpFieldName);
+        $collectIp->checked($this->{$collectIpFieldName});
+        $collectIp->themeBorder = 'hide';
+        $collectIp->columnWidth = 50;
+
+        $submissionConfigurationFieldset->add($collectIp);
+
         $inputfields->add($submissionConfigurationFieldset);
+
+        /**
+         * Organization
+         */
+        $contactOrganization = $modules->get('InputfieldFieldset');
+        $contactOrganization->label = __('Contact Organization');
+        $contactOrganization->collapsed = Inputfield::collapsedNever;
+        // $contactOrganization->description = __('Organize subscriptions with tags.');
+        // $includedMailchimpFields->notes = __('An email address field is required by Mailchimp and has been added automatically');
+        $contactOrganization->themeOffset = 'm';
+
+               /**
+         * Audience Tags
+         */
+        $tagSelectFieldValues = $this->getAudienceTagsFieldValue();
+
+        $tagsSelect = $modules->get('InputfieldAsmSelect');
+        $tagsSelect->attr('name', "{$this->mailchimp_audience_id}__audience_tags");
+        $tagsSelect->label = __('Audience Tags');
+        $tagsSelect->description = __(
+            'Optional Mailchimp tags assigned to contactst that subscribe using this form'
+        );
+        $tagsSelect->val($tagSelectFieldValues);
+        $tagsSelect->themeBorder = 'hide';
+        $tagsSelect->collapsed = Inputfield::collapsedNever;
+        $tagsSelect->showIf = "mailchimp_audience_id!=''";
+        $tagsSelect->sortable = false;
+        $tagsSelect->columnWidth = 40;
+        $tagsSelect->themeInputWidth = 'l';
+
+        foreach ($this->createAudienceTagOptions() as $tagName) {
+            $tagsSelect->addOption($tagName, $tagName);
+        }
+
+        $contactOrganization->add($tagsSelect);
+
+
+        /**
+         * New Tag Creation
+         * Not scoped, only submits data when saving config, does not persist
+         * See getAudienceTagsFieldValue() for implementation
+         */
+        $createAudienceTags = $modules->get('InputfieldText');
+        $createAudienceTags->attr('name', "new_audience_tags");
+        // $createAudienceTags->attr('value', "");
+        $createAudienceTags->label = __('Add new Audience Tags');
+        $createAudienceTags->description = __('Add one or more new Audience Tags separated by commas');
+        $createAudienceTags->placeholder = __('Tag 1, Tag 2, Tag 3');
+        $createAudienceTags->collapsed = Inputfield::collapsedNever;
+        $createAudienceTags->themeBorder = 'hide';
+        $createAudienceTags->columnWidth = 60;
+        $createAudienceTags->notes = __(
+            'New tags are created here then added in Mailchimp when the first subscription is successfully submitted'
+        );
+
+        $contactOrganization->add($createAudienceTags);
+
+        $inputfields->add($contactOrganization);
+
 
         /**
          * Mailchimp Submitted Fields
@@ -758,23 +783,67 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
 
         $inputfields->add($fieldAssociationFieldset);
 
+
+        /**
+         * Opt-In Checkbox
+         */
+
+        $optInCheckboxFieldName = "{$this->mailchimp_audience_id}__opt_in_checkbox_field";
+
+        $optInCheckboxSelect = $modules->get('InputfieldSelect');
+        $optInCheckboxSelect->attr('name', $optInCheckboxFieldName);
+        $optInCheckboxSelect->label = __('Opt-In Checkbox');
+        $optInCheckboxSelect->description = __('Optional checkbox that must be checked to subscribe');
+        $optInCheckboxSelect->attr('value', $this->{$optInCheckboxFieldName});
+        $optInCheckboxSelect->collapsed = Inputfield::collapsedNever;
+        // $optInCheckboxSelect->themeBorder = 'hide';
+        $optInCheckboxSelect->showIf = "mailchimp_audience_id!=''";
+        $optInCheckboxSelect->themeInputWidth = 'l';
+        // $optInCheckboxSelect->columnWidth = 100 / 3;
+
+        $checkboxFields = array_filter(
+            $this->fbForm->children,
+            fn ($field) => $field->type === 'Checkbox',
+        );
+
+        if ($checkboxFields) {
+            $optInCheckboxSelect->notes = __(
+                "Checked value must be one of: `true`, `'true'`, `'1'`, `1`, `'on'`, or `'yes'`"
+            );
+        }
+
+        if (!$checkboxFields) {
+            $optInCheckboxSelect->notes = __('Add one or more checkbox fields to select');
+            $optInCheckboxSelect->attr('disabled', true);
+        }
+
+        $optInCheckboxSelect = array_reduce(
+            $checkboxFields,
+            fn ($inputfield, $field) => $inputfield->addOption($field->name, $field->label),
+            $optInCheckboxSelect
+        );
+
+        $inputfields->add($optInCheckboxSelect);
+
         return $inputfields;
     }
 
     /**
-     * Creates array of arrays containing Audience Tag options
+     * Creates array of arrays containing Audience Tag options, combines dynamic sources with
+     * individual field value
      * @return array<array>
      */
     private function createAudienceTagOptions(): array
     {
-        $mailchimpTags = array_map(fn ($tag) => $tag->name, $this->mailchimpData->audienceTags);
-        $localTags = $this->data["{$this->mailchimp_audience_id}__audience_tags"];
+        $options = array_unique([
+            ...array_map(fn ($tag) => $tag->name, $this->mailchimpData->audienceTags),
+            ...$this->wire('modules')->get($this)->data['local_audience_tags'],
+            ...$this->getAudienceTagsFieldValue(),
+        ]);
 
-        $allTags = array_unique([...$mailchimpTags, ...$localTags]);
+        usort($options, 'strnatcasecmp');
 
-        sort($allTags);
-
-        return $allTags;
+        return $options;
     }
 
     /**
@@ -783,30 +852,40 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
      * Returns all locally configured tags that may or may not yet exist in Mailchimp
      * Tags are created in Mailchimp on first subscription submission containing them
      */
-    private function getAudienceTagsFieldValues(): array
+    private function getAudienceTagsFieldValue(): array
     {
-        $audienceId = $this->mailchimp_audience_id;
+        // Add new tags to this
+        // Tags with * will be created in Mailchimp on first successful subcription
 
-        $newTags = $this->data["{$audienceId}__new_audience_tags"];
-        $configuredAudienceTags = $this->data["{$audienceId}__audience_tags"];
+        // Config field name
+        $audienceTagConfigField = "{$this->mailchimp_audience_id}__audience_tags";
 
+        $configFieldValue = $this->{$audienceTagConfigField} ?? [];
+
+        // Audience Tags created on config page save
+        $newTags = $this->data['new_audience_tags'] ?? [];
+
+        // Return current value if no new tags have been created
         if (!$newTags) {
-            return $configuredAudienceTags;
+            return $configFieldValue;
         }
 
-        // Check for new audience tags
         $newTags = explode(',', $newTags);
         $newTags = array_map('trim', $newTags);
 
+        $configuredAudienceTags = array_unique([...$newTags, ...$configFieldValue]);
 
-        $configuredAudienceTags = [...$configuredAudienceTags, ...$newTags];
+        // Add and save tags for this field to immediately persist data
+        $this->saveConfigValue($audienceTagConfigField, $configuredAudienceTags);
 
-        $this->saveConfigValue("{$audienceId}__audience_tags", $configuredAudienceTags);
-        $this->data["{$audienceId}__audience_tags"] = $configuredAudienceTags;
+        $localTags = array_unique([...$this->data['local_audience_tags'], ...$newTags]);
+
+        $this->wire('modules')
+             ->get('FormBuilderProcessorMailchimpConfig')
+             ->saveModuleConfig(local_audience_tags: $localTags);
 
         return $configuredAudienceTags;
     }
-
 
     /**
      * Create sets of fields to configure addresses
@@ -825,8 +904,8 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         $showFieldIf = "{$moduleClassName}_{$includeFieldConfig}=1";
 
         $fieldset = $this->wire()->modules->InputfieldFieldset;
-        $fieldset->label = "{$mergeField->name} - {$mergeField->tag}";
-        $fieldset->description = __('Address fields are limited to 45 characters.');
+        $fieldset->label = "{$mergeField->name}";
+        $fieldset->description = __('Address fields are limited to 45 characters. Mailchimp merge tag: ') . $mergeField->tag;
         $fieldset->collapsed = Inputfield::collapsedNever;
         $fieldset->themeBorder = 'hide';
         $fieldset->notes = $this->createInputfieldNotesFromMergeFieldOptions($mergeField->options);
@@ -1285,10 +1364,10 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
      */
     private function getMailchimpApiData(bool $useLocal = true): stdClass
     {
-        $localData = json_decode($this->data['mailchimp_data']);
+        $localData = $this->data['mailchimp_data'] ?? [];
 
         if ($useLocal && $localData) {
-            return $localData;
+            return json_decode($localData);
         }
 
         $mailchimpData = $this->mailchimpData ?? $this->getMailchimpApiData();
@@ -1296,17 +1375,25 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         $now = new DateTimeImmutable();
 
         // Use stored data as cache in 3 minute intervals, helps speed up form configuration
-        // if ($now->diff($lastRetrieved)->i < 15) {
-        //     return $mailchimpData;
-        // }
+        if ($now->diff($lastRetrieved)->i < 15) {
+            return $mailchimpData;
+        }
+
+        $audiences = [];
+        $mergeFields = [];
+        $audienceTags = [];
+        $interestCategories = [];
 
         try {
             $mailchimpClient = MailchimpClient::init($this->mailchimp_api_key);
 
             $audiences = $mailchimpClient->getAudiences()['lists'];
-            $mergeFields = $mailchimpClient->getMergeFields($this->mailchimp_audience_id)['merge_fields'];
-            $audienceTags = $mailchimpClient->getTags($this->mailchimp_audience_id);
-            $interestCategories = $mailchimpClient->getInterestCategories($this->mailchimp_audience_id);
+
+            if ($this->mailchimp_audience_id) {
+                $mergeFields = $mailchimpClient->getMergeFields($this->mailchimp_audience_id)['merge_fields'];
+                $audienceTags = $mailchimpClient->getTags($this->mailchimp_audience_id);
+                $interestCategories = $mailchimpClient->getInterestCategories($this->mailchimp_audience_id);
+            }
 
             $lastResponse = $mailchimpClient->mailchimp->getLastResponse();
 
@@ -1352,13 +1439,20 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         $this->saveConfigValue('mailchimp_data', $mailchimpData);
 
         // Decode to keep nested associative arrays as object, consistent with stored data
-        return json_decode($mailchimpData);
+        $mailchimpData = json_decode($mailchimpData);
+
+        $this->executeDataMaintenance($mailchimpData);
+
+        return $mailchimpData;
     }
 
     /**
      * Logging
      */
 
+    /**
+     * Log errors received from Mailchimp when sending data
+     */
     private function logMailchimpSubmissionFailure(...$messages): void
     {
         $message = implode(', ', $messages);
@@ -1366,7 +1460,19 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         wire('log')->save(self::LOG_NAME, "Mailchimp Submission Failed: {$message}");
     }
 
+    /**
+     * Log non-critical issues that do not prevent Mailchimp subscription submissions
+     */
+    private function logFormSubmissionError(...$messages): void
+    {
+        $message = implode(', ', $messages);
 
+        wire('log')->save(self::LOG_NAME, "Form Submission Error: {$message}");
+    }
+
+    /**
+     * Log errors causing a form submission to not be sent to Mailchimp
+     */
     private function logRejectedFormSubmission(...$messages): void
     {
         $message = implode(', ', $messages);
@@ -1374,6 +1480,9 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         wire('log')->save(self::LOG_NAME, "Rejected Form Submission: {$message}");
     }
 
+    /**
+     * Log errors that occurred during API data retrieval
+     */
     private function logMailchimpApiError(...$messages): void
     {
         $message = implode(', ', $messages);
@@ -1381,6 +1490,11 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         wire('log')->save(self::LOG_NAME, "Mailchimp API Error: {$message}");
     }
 
+    /**
+     * Dumps detailed data formatted in JSON to log for most events during module activity
+     * @param  string $event Name of event logged
+     * @param  string $body  Data for JSON format
+     */
     private function debugEvent(string $event, array|object|string $body): void
     {
         if (!$this->wire()->config->debug) {
@@ -1402,5 +1516,30 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         ]);
 
         wire('log')->save(self::LOG_NAME, $logEntry);
+    }
+
+    /**
+     * Performs data mantenance to sync local data components with given Mailchimp API data. Tasks:
+     * - Reconciles local Audience Tag store with Audience Tags that exist in Mailchimp
+     */
+    public function executeDataMaintenance(?stdClass $mailchimpData = null): void
+    {
+        // Ensure a fresh copy of mailchimp data
+        $mailchimpData ??= $this->getMailchimpApiData(useLocal: false);
+
+        $modules = $this->wire('modules');
+
+        $formBuilder = $modules->get('FormBuilder');
+        $mailchimpProcessor = $modules->get($this);
+        $mailchimpProcessorConfig = $modules->get('FormBuilderProcessorMailchimpConfig');
+
+        $dataMaintenance = DataMaintenance::init(
+            $mailchimpData,
+            $formBuilder,
+            $mailchimpProcessor,
+            $mailchimpProcessorConfig
+        );
+
+        $dataMaintenance->executeAll();
     }
 }

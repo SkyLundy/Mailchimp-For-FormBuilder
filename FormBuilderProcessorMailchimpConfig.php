@@ -11,22 +11,28 @@ class FormBuilderProcessorMailchimpConfig extends ModuleConfig
 {
     /**
      * {@inheritdoc}
+     *
+     * local_audience_tags - Mailchimp creates new Audience Tags on first subscription via the API
+     *                       this may cause a divergence in local tags created vs. what is returned
+     *                       by the Mailchimp API. This property holds tags configured in FormBuilder
+     *                       forms but not yet submitted, stored globally so that they can be
+     *                       shared across all forms prior to being submitted to Mailchimp
      */
     public function getDefaults(): array
     {
         return [
             'mailchimp_api_key' => null,
             'mailchimp_api_ready' => false,
-            'mailchimp_purge_orphaned_config' => 'never',
+            'local_audience_tags' => [],
         ];
     }
 
     /**
-     * Internal module use only
+     * Save keys/values to module config
      *
-     * @param  array ...$newConfigData Named arguments
+     * @param  array ...$newConfigData Named arguments used as config array keys
      */
-    private function saveModuleConfig(...$newConfigData): void
+    public function saveModuleConfig(...$newConfigData): void
     {
         $this->modules->saveConfig('FormBuilderProcessorMailchimp', [
             ...(array) $this->getModuleConfig(),
@@ -34,13 +40,12 @@ class FormBuilderProcessorMailchimpConfig extends ModuleConfig
         ]);
     }
 
-
     /**
      * Get module config as an object containing all set and default values
      *
      * @return object Config as an object
      */
-    private function getModuleConfig(): object
+    public function getModuleConfig(): object
     {
         return (object) [
             ...$this->getDefaults(),
