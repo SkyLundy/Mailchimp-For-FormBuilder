@@ -417,7 +417,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         <h3 style="margin-top: 1.5rem;">Mailchimp Fields</h3>
         <p>Select Mailchimp fields to submit data to then configure the form fields to associate with that Mailchimp field in the following section. An email field is required at minimum by Mailchimp and is added automatically.</p>
 
-        <h3 style="margin-top: 1.5rem;">Form Field Associations</h3>
+        <h3 style="margin-top: 1.5rem;">Form Fields</h3>
         <p>Choose a form field to associate with the Mailchimp field that has been added. Notes may be present below fields which may provide additional information that can assist configuring the fields for this form. These may include formatting, expected/allowed values, and maximum length of the value for that field.</p>
 
         <p>NOTE: It is not possible to process image/file upload fields</p>
@@ -730,7 +730,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
          * Mailchimp Field Associations
          */
         $fieldAssociationFieldset = $modules->get('InputfieldFieldset');
-        $fieldAssociationFieldset->label = __('Form Field Associations');
+        $fieldAssociationFieldset->label = __('Form Fields');
         $fieldAssociationFieldset->collapsed = Inputfield::collapsedNever;
         $fieldAssociationFieldset->description = __(
             'Choose a form field to associate with each Mailchimp field. Information provided by Mailchimp may be noted below fields.'
