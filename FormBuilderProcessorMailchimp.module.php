@@ -8,8 +8,7 @@ wire('classLoader')->addNamespace('FormBuilderProcessorMailchimp\App', __DIR__ .
 
 use DateTimeImmutable;
 use Exception;
-use FormBuilderProcessorMailchimp\App\DataMaintenance;
-use FormBuilderProcessorMailchimp\App\MailchimpClient;
+use FormBuilderProcessorMailchimp\App\{ DataMaintenance, MailchimpClient };
 use stdClass;
 
 class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implements Module, ConfigurableModule
@@ -646,11 +645,9 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         $contactOrganization = $modules->get('InputfieldFieldset');
         $contactOrganization->label = __('Contact Organization');
         $contactOrganization->collapsed = Inputfield::collapsedNever;
-        // $contactOrganization->description = __('Organize subscriptions with tags.');
-        // $includedMailchimpFields->notes = __('An email address field is required by Mailchimp and has been added automatically');
         $contactOrganization->themeOffset = 'm';
 
-               /**
+        /**
          * Audience Tags
          */
         $tagSelectFieldValues = $this->getAudienceTagsFieldValue();
@@ -708,8 +705,10 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         $includedMailchimpFields->description = __(
             'Select Mailchimp fields to collect data for, then choose which form fields should be associated below. The Mailchimp merge tag appears next to each field name.'
         );
-        $includedMailchimpFields->notes = __('An email address field is required by Mailchimp and has been added automatically');
         $includedMailchimpFields->themeOffset = 'm';
+        $includedMailchimpFields->notes = __(
+            'An email address field is required by Mailchimp and has been selected automatically. Fields that have been configured to be required in Mailchimp are required here'
+        );
 
         foreach ($this->mailchimpData->mergeFields as $mergeField) {
             $includedMailchimpFields->add(
@@ -903,12 +902,21 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         $moduleClassName = $this->wire()->modules->get($this)->className;
         $showFieldIf = "{$moduleClassName}_{$includeFieldConfig}=1";
 
+        $notes = $this->createInputfieldNotesFromMergeFieldOptions($mergeField->options);
+
+        if ($mergeField->required) {
+            $notes = implode('. ', [
+               '**' .  __('This is set as required in Mailchimp and must be completed to subscribe. Consider making this form field required.') . '**',
+                $notes,
+            ]);
+        }
+
         $fieldset = $this->wire()->modules->InputfieldFieldset;
         $fieldset->label = "{$mergeField->name}";
         $fieldset->description = __('Address fields are limited to 45 characters. Mailchimp merge tag: ') . $mergeField->tag;
         $fieldset->collapsed = Inputfield::collapsedNever;
         $fieldset->themeBorder = 'hide';
-        $fieldset->notes = $this->createInputfieldNotesFromMergeFieldOptions($mergeField->options);
+        $fieldset->notes = $notes;
         $fieldset->themeColor = 'none';
         $fieldset->showIf = $showFieldIf;
 
@@ -927,9 +935,11 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
 
             $fieldName = "{$audienceId}__mailchimp_address_mergefield__{$mergeField->merge_id}-{$name}";
 
+            $mcRequired = '**' . __('Required by Mailchimp') . '**';
+
             $configField = $this->createFormFieldSelect($fieldName, $label, [
                 'columnWidth' => 100 / 3,
-                'notes' => $required ? __('Required by Mailchimp') : null,
+                'notes' => $required ? $mcRequired : null,
                 'required' => $required,
                 'requireIf' => $showFieldIf,
             ]);
@@ -949,7 +959,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
 
         return $this->createFormFieldSelect($fieldName, __('Email Address'), [
             'required' => true,
-            'notes' => __('Required by Mailchimp'),
+            'notes' => '**' . __('Required by Mailchimp for all subscribers') . '**',
             'themeInputWidth' => 'l',
             'description' => __('Mailchimp merge tag:') . ' EMAIL',
         ]);
@@ -962,12 +972,15 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
     {
         $fieldName = "{$this->mailchimp_audience_id}__submit_to_mailchimp__{$mergeField->merge_id}";
         $fieldValue = $this->{$fieldName};
+        $required = false;
 
         // Automatically include all required fields
         if ($mergeField->required) {
             $fieldValue = 1;
+            $required = true;
         }
 
+        $mergeField->tag === 'BIRTHDAY' && $required = true;
         $checkbox = $this->wire('modules')->get('InputfieldCheckbox');
         $checkbox->label = "{$mergeField->name} - {$mergeField->tag}";
         $checkbox->attr('name', $fieldName);
@@ -975,8 +988,7 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         $checkbox->columnWidth = 25;
         $checkbox->collapsed = Inputfield::collapsedNever;
         $checkbox->themeBorder = 'hide';
-
-        $mergeField->required &&  $checkbox->attr('disabled', 'true');
+        $checkbox->required = $required;
 
         return $checkbox;
     }
@@ -1009,6 +1021,8 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         $includedFieldName = "{$this->mailchimp_audience_id}__submit_to_mailchimp__{$mergeField->merge_id}";
         $fieldName = "{$this->mailchimp_audience_id}__mailchimp_mergefield__{$mergeField->merge_id}";
 
+        $notes = $this->createInputfieldNotesFromMergeFieldOptions($mergeField->options);
+
         $visibility = [];
 
         if ($mergeField->required) {
@@ -1016,12 +1030,17 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
                 'showIf' => "{$includedFieldName}=1",
                 'requireIf' => "{$includedFieldName}=1",
             ];
+
+            $notes = implode('. ', [
+               '**' .  __('This is set as required in Mailchimp and must be completed to subscribe. Consider making this form field required.') . '**',
+                $notes,
+            ]);
         }
 
         return $this->createFormFieldSelect($fieldName, $mergeField->name, [
             'required' => $mergeField->required,
             'description' => __('Mailchimp merge tag:') . " {$mergeField->tag}",
-            'notes' => $this->createInputfieldNotesFromMergeFieldOptions($mergeField->options),
+            'notes' => $notes,
             'showIf' => "{$includedFieldName}=1",
             'requireIf' => "{$includedFieldName}=1",
             'required' => true,
@@ -1045,9 +1064,6 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
             "Type: {$category->type}",
             'Values: ' . implode(', ', $interests)
         ]);
-
-        // $fieldName = $this->fieldConfig($category->id)->interestCategory['name'];
-        // $includedFieldName = $this->fieldConfig($category->id)->submitToMailchimp['name'];
 
         $fieldName = "{$this->mailchimp_audience_id}__interest_category__{$category->id}";
         $includedFieldName = "{$this->mailchimp_audience_id}__submit_to_mailchimp__{$category->id}";
@@ -1356,7 +1372,6 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
         }, null);
     }
 
-
     /**
      * Retrieves Mailchimp data from API, persists in processor config
      * @param bool $useLocal Load from local configuration, false to pull fresh data from API
@@ -1370,14 +1385,14 @@ class FormBuilderProcessorMailchimp extends FormBuilderProcessorAction implement
             return json_decode($localData);
         }
 
-        $mailchimpData = $this->mailchimpData ?? $this->getMailchimpApiData();
-        $lastRetrieved = new DateTimeImmutable($mailchimpData->lastRetrieved->date);
-        $now = new DateTimeImmutable();
+        // $mailchimpData = $this->mailchimpData ?? $this->getMailchimpApiData();
+        // $lastRetrieved = new DateTimeImmutable($mailchimpData->lastRetrieved->date);
+        // $now = new DateTimeImmutable();
 
-        // Use stored data as cache in 3 minute intervals, helps speed up form configuration
-        if ($now->diff($lastRetrieved)->i < 15) {
-            return $mailchimpData;
-        }
+        // Use stored data as cache in 3 minute intervals, helps speed up development
+        // if ($now->diff($lastRetrieved)->i < 15) {
+        //     return $mailchimpData;
+        // }
 
         $audiences = [];
         $mergeFields = [];
