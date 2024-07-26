@@ -1,6 +1,6 @@
 # FormBuilder Mailchimp Processor
 
-A highly configurable add-on for the ProcessWire FormBuilder module that adds Mailchimp list subscriptions to new and existing forms.
+A highly configurable add-on for the ProcessWire FormBuilder module that adds Mailchimp subscriptions to new and existing forms.
 
 This is alpha software. Please test thoroughly and file issues if you encounter bugs.
 
@@ -26,19 +26,24 @@ All fieldtypes with the exception of image/file upload fields are supported.
 
 ## Installation
 
-Download the .zip from the Github repository, unzip into /site/modules, install module Admin
+Download the .zip from the Github repository, unzip into /site/modules, install via module Admin
 
 ## Usage
 
-- Install module
-- Add API key on the module configuration page
-- Use the 'Actions' tab when configuring a form to add Mailchimp processing
-- Select a Mailchimp Audience, save, then return to the action configuration to continue setting up your Mailchimp integration.
+Visit the 'Actions' tab when editing a FormBuilder form, then check 'Mailchimp for FormBuilder'.
 
-Each field in Mailchimp audience will be displayed along with a select element to associate a form field. Fields that are required in Mailchimp are required when configuring your integration. Associate all fields, or only the fields you need.
+Choose a Mailchimp Audience, save, then return to the Mailchimp for FormBuilder configuration area. Select the actions and configuration options that should apply to subscriptions from this form.
 
-Some field association select inputs may display notes that can help you configure your form to work with Mailchimp. These may include accepted values for Mailchimp radio/select/checkbox fields, formatting, or character limits. Ensure that your fields submit data that Mailchimp will accept.
+Choose Audience Tags, or create new ones, to organize subscriptions and contacts that are submitted from this form.
 
-Field associations and integration settings are saved individually for each Mailchimp audience so it is possible to switch between audiences and maintain unique configurations.
+A list of checkboxes with the fields available in Mailchimp allows you to choose which fields you would like your form to send data to.
 
-Mailchimp Processor supports all fields except image/file fields.
+Choose the form fields that should send data to the Mailchimp fields you've selected.
+
+Optionally choose an opt-in checkbox field required for subscribing.
+
+The configuration screen for this action has some robust information to make configuration easier for non-developers.
+
+## Todo
+
+- Implement Mailchimp GDPR features. Mailchimp doesn't make it easy to do this via the API but it's possible.
